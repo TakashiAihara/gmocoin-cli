@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { gunzipSync, gzipSync } from "node:zlib";
+import { gzipSync } from "node:zlib";
 import { recordPath } from "./sink.ts";
 
 export type Channel = "orderbooks" | "trades";
@@ -70,7 +70,9 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   ];
   const counts = new Map<string, number>(subscriptions.map((s) => [`${s.channel}/${s.symbol}`, 0]));
   const buffers = new Map<string, string[]>();
-  const checkedPaths = new Set<string>();
+  // 自分が作ったファイルにしか書き足さないため、(stream, UTC 日付) ごとに最初の受信時刻で決めた path を固定する
+  const paths = new Map<string, string>();
+  const created = new Set<string>();
 
   let ws: WebSocket | undefined;
   let stopped = false;
@@ -103,19 +105,6 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     ws = undefined;
   }
 
-  function quarantineIfTorn(path: string) {
-    if (checkedPaths.has(path)) return;
-    checkedPaths.add(path);
-    if (!existsSync(path)) return;
-    try {
-      gunzipSync(readFileSync(path));
-    } catch {
-      const moved = `${path}.corrupt-${now().toISOString().replace(/[:.]/g, "-")}`;
-      renameSync(path, moved);
-      log(`moved unreadable file aside: ${moved}`);
-    }
-  }
-
   function flush() {
     const pending = [...buffers];
     buffers.clear();
@@ -123,8 +112,12 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     try {
       for (const [path, lines] of pending) {
         mkdirSync(dirname(path), { recursive: true });
-        quarantineIfTorn(path);
-        appendFileSync(path, gzipSync(lines.join("")));
+        const member = gzipSync(lines.join(""));
+        if (created.has(path)) appendFileSync(path, member);
+        else {
+          writeFileSync(path, member, { flag: "wx" });
+          created.add(path);
+        }
         written++;
       }
     } catch (e) {
@@ -179,7 +172,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     const at = now();
     const accepted = parseAccepted(text);
     if (!accepted) {
-      log(`skipped message: ${text.slice(0, 200)}`);
+      log(`skipped message: ${text.slice(0, 200).replace(/[\r\n]/g, " ")}`);
       return;
     }
 
@@ -189,7 +182,12 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     const key = `${accepted.channel}/${accepted.symbol}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
 
-    const path = recordPath(outDir, accepted.channel, accepted.symbol, at);
+    const pathKey = `${key}/${at.toISOString().slice(0, 10)}`;
+    let path = paths.get(pathKey);
+    if (!path) {
+      path = recordPath(outDir, accepted.channel, accepted.symbol, at);
+      paths.set(pathKey, path);
+    }
     const line = `{"recv_at":"${at.toISOString()}","msg":${text.replace(/[\r\n]/g, " ")}}\n`;
     const lines = buffers.get(path);
     if (lines) lines.push(line);

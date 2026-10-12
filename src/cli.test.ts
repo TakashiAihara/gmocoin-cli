@@ -117,7 +117,8 @@ test("record subscribes orderbooks and trades of BTC by default", async () => {
     { command: "subscribe", channel: "trades", symbol: "BTC", option: "TAKER_ONLY" },
   ]);
   // GMO の購読は同一 IP から 1 秒 1 回まで
-  expect(server.received[1]!.at - server.received[0]!.at).toBeGreaterThanOrEqual(1000);
+  // 既定は 1100ms。1000ms ちょうどだと同じ 1 秒の窓に 2 回入りうる
+  expect(server.received[1]!.at - server.received[0]!.at).toBeGreaterThanOrEqual(1090);
 }, 10_000);
 
 test("record writes received messages and exits 0 on SIGINT", async () => {

@@ -232,6 +232,8 @@ describe("writing", () => {
     const lines = readDayRaw(dir.path, "trades/BTC", "2026-10-12");
     expect(lines.length).toBe(1);
     expect(JSON.parse(lines[0]!).msg).toEqual(TRADE_BTC);
+    // 消すのではなく空白に置き換える。CR と LF の 2 つに、インデントの 2 つが続く
+    expect(lines[0]).toContain('{    "channel": "trades",    "price"');
   });
 
   test("starts a new file when the UTC date of the receive time changes", async () => {
@@ -290,6 +292,25 @@ describe("writing", () => {
     await Bun.sleep(100);
     await recorder!.stop();
     expect(readDay(dir.path, "trades/BTC", "2026-10-12").length).toBe(1);
+  });
+
+  test("keeps one file per stream and day for the life of the process", async () => {
+    setup();
+    let current = new Date("2026-10-12T10:00:00.000Z");
+    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => current });
+    await waitFor(() => server.opened === 1);
+    server.send(JSON.stringify(TRADE_BTC));
+    await Bun.sleep(150);
+    current = new Date("2026-10-12T11:30:00.000Z");
+    server.send(JSON.stringify({ ...TRADE_BTC, size: "0.333" }));
+    await Bun.sleep(150);
+    await recorder!.stop();
+
+    expect(listFiles(dir.path)).toEqual(["trades/BTC/2026-10-12T100000.000Z.jsonl.gz"]);
+    expect(readDay(dir.path, "trades/BTC", "2026-10-12").map((r) => r.msg.size)).toEqual([
+      "0.0001",
+      "0.333",
+    ]);
   });
 
   test("writes to a new file after a restart instead of appending to the earlier one", async () => {
@@ -419,6 +440,12 @@ describe("accepting messages", () => {
     const line = logs.find((l) => l.includes("HEAD-"))!;
     expect(line.includes("-TAIL")).toBe(false);
     expect(line.length).toBeLessThan(400);
+
+    server.send("broken\r\nstats orderbooks/BTC=999");
+    await waitFor(() => logs.some((l) => l.includes("broken")), 1000);
+    // 受信した改行でログが割れて、別の行 (stats) に見えないようにする
+    expect(logs.some((l) => l.startsWith("stats orderbooks/BTC=999"))).toBe(false);
+    expect(logs.find((l) => l.includes("broken"))).not.toMatch(/[\r\n]/);
   });
 
   test("never writes outside the output directory for an unexpected channel or symbol", async () => {
@@ -504,7 +531,7 @@ describe("recovering", () => {
     server.closeConn(seen - 1);
     await waitFor(() => server.opened > seen, 3000);
     expect(Date.now() - closedAt).toBeGreaterThanOrEqual(40);
-    expect(Date.now() - closedAt).toBeLessThan(150);
+    expect(Date.now() - closedAt).toBeLessThan(90);
   });
 
   test("reconnects when nothing arrives within the idle timeout, and closes the idle connection", async () => {
