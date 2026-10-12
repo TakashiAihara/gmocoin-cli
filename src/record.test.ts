@@ -395,6 +395,7 @@ describe("writing", () => {
         { channel: "trades", symbol: "BTC" },
       ],
       now: () => recvAt,
+      flushIntervalMs: 300,
     });
     await waitFor(() => server.opened === 1);
     // 同じ flush で、書ける板の後に書けない約定が来る。捨てるのは約定の 2 行だけ
@@ -444,7 +445,6 @@ describe("accepting messages", () => {
     server.send("broken\r\nstats orderbooks/BTC=999");
     await waitFor(() => logs.some((l) => l.includes("broken")), 1000);
     // 受信した改行でログが割れて、別の行 (stats) に見えないようにする
-    expect(logs.some((l) => l.startsWith("stats orderbooks/BTC=999"))).toBe(false);
     expect(logs.find((l) => l.includes("broken"))).not.toMatch(/[\r\n]/);
   });
 

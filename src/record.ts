@@ -153,7 +153,8 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     const next = () => {
       if (i >= subscriptions.length) return;
 
-      const wait = lastSubscribeAt + subscribeIntervalMs - Date.now();
+      // 間隔は壁時計ではなく単調増加の時計で測る。時計が戻ると購読が止まるため
+      const wait = lastSubscribeAt + subscribeIntervalMs - performance.now();
       if (wait > 0) {
         subscribeTimer = setTimeout(next, wait);
         return;
@@ -161,7 +162,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
       const sub = subscriptions[i]!;
       const option = sub.channel === "trades" ? { option: "TAKER_ONLY" } : {};
       sock.send(JSON.stringify({ command: "subscribe", ...sub, ...option }));
-      lastSubscribeAt = Date.now();
+      lastSubscribeAt = performance.now();
       i++;
       next();
     };

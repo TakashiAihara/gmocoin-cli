@@ -10,7 +10,7 @@ bun run install-bin   # links ./src/cli.ts to ~/.local/bin/gmocoin
 
 ## record
 
-Records the public WebSocket `orderbooks` and `trades` channels as gzip JSONL. No API key is needed and no order is placed. Trades are subscribed taker-only, so each fill arrives once with the aggressor's side.
+Records the public WebSocket `orderbooks` and `trades` channels as gzip JSONL. No API key is needed and no order is placed. Trades are subscribed with GMO's `TAKER_ONLY` option, which sends only the taker side. Without it, the same fill was observed arriving as a BUY and a SELL.
 
 ```bash
 gmocoin record                                        # BTC orderbooks and trades into ./data
@@ -27,11 +27,12 @@ Each line is `{"recv_at":"<receive time, UTC>","msg":<the message as received>}`
 
 ### Running unattended
 
-`record` exits 1 when it cannot write, and leaves restarting to a supervisor. Give it an absolute path to `bun`, since systemd's PATH is minimal, and a restart delay of a few seconds, since GMO allows one subscribe per second per IP:
+`record` exits 1 when it cannot write, and leaves restarting to a supervisor. Give it an absolute path to `bun`, since systemd's PATH is minimal (the mise shim keeps working across bun upgrades), and a restart delay of a few seconds, since GMO allows one subscribe per second per IP:
 
 ```ini
 [Service]
-ExecStart=/home/me/.local/share/mise/installs/bun/1.4.2/bin/bun /opt/gmocoin-cli/src/cli.ts record --out /srv/gmocoin
+WorkingDirectory=/opt/gmocoin-cli
+ExecStart=/home/me/.local/share/mise/shims/bun /opt/gmocoin-cli/src/cli.ts record --out /srv/gmocoin
 Restart=on-failure
 RestartSec=10
 ```
