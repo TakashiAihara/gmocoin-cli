@@ -75,8 +75,14 @@ export function tempDir(): { path: string; cleanup(): void } {
 }
 
 // 受け付けるだけで HTTP の upgrade を返さない TCP サーバー。接続が始まらないまま止まる相手を作る
-export function startSilentTcpServer(): { url: string; accepts: number[]; stop(): void } {
+export function startSilentTcpServer(): {
+  url: string;
+  accepts: number[];
+  closes: number[];
+  stop(): void;
+} {
   const accepts: number[] = [];
+  const closes: number[] = [];
   const listener = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
@@ -85,11 +91,15 @@ export function startSilentTcpServer(): { url: string; accepts: number[]; stop()
         accepts.push(Date.now());
       },
       data() {},
+      close() {
+        closes.push(Date.now());
+      },
     },
   });
   return {
     url: `ws://127.0.0.1:${listener.port}`,
     accepts,
+    closes,
     stop: () => listener.stop(true),
   };
 }

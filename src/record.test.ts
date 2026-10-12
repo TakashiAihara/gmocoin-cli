@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { join } from "node:path";
 import { startRecorder, type Recorder, type RecorderOptions, type Subscription } from "./record.ts";
 import { recordPath } from "./sink.ts";
@@ -69,7 +70,11 @@ function sentOn(conn: number) {
 }
 
 function subscribeCommands(subs: Subscription[]) {
-  return subs.map((s) => ({ command: "subscribe", channel: s.channel, symbol: s.symbol }));
+  return subs.map((s) =>
+    s.channel === "trades"
+      ? { command: "subscribe", channel: s.channel, symbol: s.symbol, option: "TAKER_ONLY" }
+      : { command: "subscribe", channel: s.channel, symbol: s.symbol },
+  );
 }
 
 function listFiles(root: string): string[] {
@@ -127,6 +132,25 @@ describe("subscribing", () => {
     const at = server.received.map((r) => r.at);
     expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(140);
     expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(140);
+  });
+
+  test("subscribes a repeated pair only once", async () => {
+    setup();
+    start({
+      subscriptions: [
+        { channel: "trades", symbol: "BTC" },
+        { channel: "trades", symbol: "BTC" },
+        { channel: "orderbooks", symbol: "BTC" },
+      ],
+    });
+    await waitFor(() => server.received.length >= 2);
+    await Bun.sleep(400);
+    expect(server.received.map((r) => JSON.parse(r.text))).toEqual(
+      subscribeCommands([
+        { channel: "trades", symbol: "BTC" },
+        { channel: "orderbooks", symbol: "BTC" },
+      ]),
+    );
   });
 
   test("abandons the rest of the sequence when the connection drops mid-way, and keeps the spacing across connections", async () => {
@@ -283,6 +307,51 @@ describe("writing", () => {
     expect(rows.map((r) => r.msg.size)).toEqual(["0.0001", "0.777"]);
   });
 
+  test("moves a day file with a broken tail aside before writing, instead of appending after it", async () => {
+    setup();
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    const path = join(dir.path, "trades/BTC/2026-10-12.jsonl.gz");
+    mkdirSync(join(dir.path, "trades/BTC"), { recursive: true });
+    const earlier = `{"recv_at":"2026-10-12T09:00:00.000Z","msg":${JSON.stringify(TRADE_BTC)}}\n`;
+    const cut = gzipSync(earlier);
+    // 完結したメンバーの後ろに、途中で切れたメンバーが残っている状態
+    writeFileSync(path, Buffer.concat([cut, cut.subarray(0, cut.length - 6)]));
+
+    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    await waitFor(() => server.opened === 1);
+    server.send(JSON.stringify({ ...TRADE_BTC, size: "0.555" }));
+    await Bun.sleep(150);
+    await recorder!.stop();
+
+    expect(readRecords(path).map((r) => r.msg.size)).toEqual(["0.555"]);
+    const moved = listFiles(dir.path).filter((f) =>
+      /^trades\/BTC\/2026-10-12\.jsonl\.gz\.corrupt-/.test(f),
+    );
+    expect(moved.length).toBe(1);
+    expect(readFileSync(join(dir.path, moved[0]!)).subarray(0, cut.length)).toEqual(cut);
+    expect(logs.some((l) => l.includes(".corrupt-"))).toBe(true);
+  });
+
+  test("keeps appending to a day file that is intact", async () => {
+    setup();
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    const path = join(dir.path, "trades/BTC/2026-10-12.jsonl.gz");
+    mkdirSync(join(dir.path, "trades/BTC"), { recursive: true });
+    writeFileSync(
+      path,
+      gzipSync(`{"recv_at":"2026-10-12T09:00:00.000Z","msg":${JSON.stringify(TRADE_BTC)}}\n`),
+    );
+
+    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    await waitFor(() => server.opened === 1);
+    server.send(JSON.stringify({ ...TRADE_BTC, size: "0.555" }));
+    await Bun.sleep(150);
+    await recorder!.stop();
+
+    expect(readRecords(path).map((r) => r.msg.size)).toEqual(["0.0001", "0.555"]);
+    expect(listFiles(dir.path)).toEqual(["trades/BTC/2026-10-12.jsonl.gz"]);
+  });
+
   test("reports a write failure through onFatal and stops recording", async () => {
     setup();
     // trades のディレクトリを作れないように、同じ名前の通常ファイルを置く
@@ -292,6 +361,7 @@ describe("writing", () => {
     server.send(JSON.stringify(TRADE_BTC));
     await waitFor(() => fatals.length === 1, 1000);
     expect(fatals[0]).toBeInstanceOf(Error);
+    expect(logs.some((l) => /dropped 1 line/.test(l))).toBe(true);
     await waitFor(() => server.closed === 1, 1000);
     await Bun.sleep(300);
     expect(server.opened).toBe(1);
@@ -315,6 +385,18 @@ describe("accepting messages", () => {
     ]);
     expect(logs.some((l) => l.includes("ERR-5003"))).toBe(true);
     expect(logs.some((l) => l.includes("not json at all"))).toBe(true);
+    expect(server.opened).toBe(1);
+  });
+
+  test("logs only the head of a skipped message", async () => {
+    setup();
+    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }] });
+    await waitFor(() => server.opened === 1);
+    server.send(`HEAD-${"x".repeat(5000)}-TAIL`);
+    await waitFor(() => logs.some((l) => l.includes("HEAD-")), 1000);
+    const line = logs.find((l) => l.includes("HEAD-"))!;
+    expect(line.includes("-TAIL")).toBe(false);
+    expect(line.length).toBeLessThan(400);
   });
 
   test("never writes outside the output directory for an unexpected channel or symbol", async () => {
@@ -384,13 +466,12 @@ describe("recovering", () => {
       server.closeConn(seen - 1);
     }
     const gaps = opens.slice(1).map((t, i) => t - opens[i]!);
-    // 50 → 100 → 200 → 400 → 400 (上限)
-    expect(gaps[0]!).toBeLessThan(90);
-    expect(gaps[1]!).toBeGreaterThanOrEqual(90);
-    expect(gaps[1]!).toBeLessThan(190);
-    expect(gaps[2]!).toBeGreaterThanOrEqual(180);
-    expect(gaps[4]!).toBeGreaterThanOrEqual(380);
-    expect(gaps[4]!).toBeLessThan(700);
+    // 50 → 100 → 200 → 400 → 400 (上限)。下限は待ちそのもの、上限は待ち + 余裕
+    const expected = [50, 100, 200, 400, 400];
+    expected.forEach((ms, i) => {
+      expect(gaps[i]!).toBeGreaterThanOrEqual(ms - 10);
+      expect(gaps[i]!).toBeLessThan(ms + Math.min(ms, 150));
+    });
 
     // 次の接続ではメッセージを 1 件届けてから切る。待ちは初期値に戻る
     await waitFor(() => server.opened > seen, 3000);
@@ -400,6 +481,7 @@ describe("recovering", () => {
     const closedAt = Date.now();
     server.closeConn(seen - 1);
     await waitFor(() => server.opened > seen, 3000);
+    expect(Date.now() - closedAt).toBeGreaterThanOrEqual(40);
     expect(Date.now() - closedAt).toBeLessThan(150);
   });
 
@@ -413,6 +495,20 @@ describe("recovering", () => {
     await waitFor(() => server.closed >= 1, 1000);
   });
 
+  test("reconnects only once after an idle timeout", async () => {
+    setup();
+    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], idleTimeoutMs: 300 });
+    await waitFor(() => server.opened === 2, 2000);
+    const timer = setInterval(() => {
+      try {
+        server.send(JSON.stringify(TRADE_BTC), 1);
+      } catch {}
+    }, 100);
+    await Bun.sleep(800);
+    clearInterval(timer);
+    expect(server.opened).toBe(2);
+  });
+
   test("does not let invalid messages postpone the idle timeout", async () => {
     setup();
     start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], idleTimeoutMs: 300 });
@@ -422,11 +518,13 @@ describe("recovering", () => {
         server.send(JSON.stringify({ error: "ERR-5003 Request too many." }), 0);
       } catch {}
     }, 100);
+    const firstAt = Date.now();
     try {
       await waitFor(() => server.opened >= 2, 1500);
     } finally {
       clearInterval(timer);
     }
+    expect(Date.now() - firstAt).toBeGreaterThanOrEqual(250);
   });
 
   test("valid messages keep the connection open past the idle timeout", async () => {
@@ -450,6 +548,8 @@ describe("recovering", () => {
       });
       await waitFor(() => silent.accepts.length >= 2, 2000);
       expect(silent.accepts[1]! - silent.accepts[0]!).toBeGreaterThanOrEqual(250);
+      // 捨てた接続は閉じる (残すと止まった接続が溜まり続ける)
+      await waitFor(() => silent.closes.length >= 1, 1000);
     } finally {
       await recorder?.stop();
       recorder = undefined;

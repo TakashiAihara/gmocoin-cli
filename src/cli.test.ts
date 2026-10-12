@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { readRecords, startFakeServer, tempDir, waitFor, type FakeServer } from "./test-helpers.ts";
@@ -87,6 +87,7 @@ test("record exits 1 when it cannot write", async () => {
     }),
   );
   expect(await p.exited).toBe(1);
+  expect(await new Response(p.stderr).text()).toContain("write failed");
 }, 15_000);
 
 test("record subscribes orderbooks and trades of BTC by default", async () => {
@@ -98,8 +99,10 @@ test("record subscribes orderbooks and trades of BTC by default", async () => {
   await p.exited;
   expect(server.received.map((r) => JSON.parse(r.text))).toEqual([
     { command: "subscribe", channel: "orderbooks", symbol: "BTC" },
-    { command: "subscribe", channel: "trades", symbol: "BTC" },
+    { command: "subscribe", channel: "trades", symbol: "BTC", option: "TAKER_ONLY" },
   ]);
+  // GMO の購読は同一 IP から 1 秒 1 回まで
+  expect(server.received[1]!.at - server.received[0]!.at).toBeGreaterThanOrEqual(1000);
 }, 10_000);
 
 test("record writes received messages and exits 0 on SIGINT", async () => {
@@ -113,6 +116,7 @@ test("record writes received messages and exits 0 on SIGINT", async () => {
     command: "subscribe",
     channel: "trades",
     symbol: "BTC_JPY",
+    option: "TAKER_ONLY",
   });
 
   const trade = {
@@ -128,7 +132,9 @@ test("record writes received messages and exits 0 on SIGINT", async () => {
   p.kill("SIGINT");
   expect(await p.exited).toBe(0);
 
-  const today = new Date().toISOString().slice(0, 10);
-  const rows = readRecords(join(dir.path, "trades/BTC_JPY", `${today}.jsonl.gz`));
+  // 日付は受信時刻で決まるので、UTC 0 時をまたいでも落ちないようにファイル名では探さない
+  const files = readdirSync(join(dir.path, "trades/BTC_JPY"));
+  expect(files.length).toBe(1);
+  const rows = readRecords(join(dir.path, "trades/BTC_JPY", files[0]!));
   expect(rows.map((r) => r.msg)).toEqual([trade]);
 }, 10_000);
