@@ -1,6 +1,6 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname } from "node:path";
-import { gzipSync } from "node:zlib";
+import { gunzipSync, gzipSync } from "node:zlib";
 import { recordPath } from "./sink.ts";
 
 export type Channel = "orderbooks" | "trades";
@@ -70,6 +70,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
   ];
   const counts = new Map<string, number>(subscriptions.map((s) => [`${s.channel}/${s.symbol}`, 0]));
   const buffers = new Map<string, string[]>();
+  const checkedPaths = new Set<string>();
 
   let ws: WebSocket | undefined;
   let stopped = false;
@@ -102,18 +103,35 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     ws = undefined;
   }
 
+  function quarantineIfTorn(path: string) {
+    if (checkedPaths.has(path)) return;
+    checkedPaths.add(path);
+    if (!existsSync(path)) return;
+    try {
+      gunzipSync(readFileSync(path));
+    } catch {
+      const moved = `${path}.corrupt-${now().toISOString().replace(/[:.]/g, "-")}`;
+      renameSync(path, moved);
+      log(`moved unreadable file aside: ${moved}`);
+    }
+  }
+
   function flush() {
     const pending = [...buffers];
     buffers.clear();
+    let written = 0;
     try {
       for (const [path, lines] of pending) {
         mkdirSync(dirname(path), { recursive: true });
+        quarantineIfTorn(path);
         appendFileSync(path, gzipSync(lines.join("")));
+        written++;
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
+      const dropped = pending.slice(written).reduce((n, [, lines]) => n + lines.length, 0);
       halt();
-      log(`write failed: ${err.message}`);
+      log(`write failed, dropped ${dropped} line(s): ${err.message}`);
       onFatal(err);
     }
   }
@@ -147,7 +165,9 @@ export function startRecorder(opts: RecorderOptions): Recorder {
         subscribeTimer = setTimeout(next, wait);
         return;
       }
-      sock.send(JSON.stringify({ command: "subscribe", ...subscriptions[i] }));
+      const sub = subscriptions[i]!;
+      const option = sub.channel === "trades" ? { option: "TAKER_ONLY" } : {};
+      sock.send(JSON.stringify({ command: "subscribe", ...sub, ...option }));
       lastSubscribeAt = Date.now();
       i++;
       next();
@@ -159,7 +179,7 @@ export function startRecorder(opts: RecorderOptions): Recorder {
     const at = now();
     const accepted = parseAccepted(text);
     if (!accepted) {
-      log(`skipped message: ${text}`);
+      log(`skipped message: ${text.slice(0, 200)}`);
       return;
     }
 

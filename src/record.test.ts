@@ -537,6 +537,28 @@ describe("recovering", () => {
     expect(server.opened).toBe(1);
   });
 
+  test("cuts an idle connection whose peer no longer answers, without waiting for the close handshake", async () => {
+    setup();
+    const silent = startSilentTcpServer({ handshake: true });
+    try {
+      start({
+        subscriptions: [{ channel: "trades", symbol: "BTC" }],
+        url: silent.url,
+        idleTimeoutMs: 300,
+        backoffInitialMs: 5000,
+      });
+      await waitFor(() => silent.accepts.length === 1, 1000);
+      await Bun.sleep(300);
+      const idleAt = Date.now();
+      await waitFor(() => silent.closes.length >= 1, 1000);
+      expect(Date.now() - idleAt).toBeLessThan(500);
+    } finally {
+      await recorder?.stop();
+      recorder = undefined;
+      silent.stop();
+    }
+  });
+
   test("gives up on a connection that never completes the handshake", async () => {
     setup();
     const silent = startSilentTcpServer();

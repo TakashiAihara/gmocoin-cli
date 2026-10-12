@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 
 export type Received = { conn: number; at: number; text: string };
@@ -74,8 +75,9 @@ export function tempDir(): { path: string; cleanup(): void } {
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
 }
 
-// 受け付けるだけで HTTP の upgrade を返さない TCP サーバー。接続が始まらないまま止まる相手を作る
-export function startSilentTcpServer(): {
+// 受け付けるだけで黙る TCP サーバー。handshake: false なら upgrade を返さず、true なら
+// upgrade だけ返してその後は close フレームにも応えない (応答しなくなった相手を作る)
+export function startSilentTcpServer(opts: { handshake?: boolean } = {}): {
   url: string;
   accepts: number[];
   closes: number[];
@@ -90,7 +92,18 @@ export function startSilentTcpServer(): {
       open() {
         accepts.push(Date.now());
       },
-      data() {},
+      data(socket, data) {
+        if (!opts.handshake) return;
+        const key = /Sec-WebSocket-Key: (.+)\r\n/i.exec(data.toString())?.[1];
+        if (!key) return;
+        const accept = createHash("sha1")
+          .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+          .digest("base64");
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+            `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
+        );
+      },
       close() {
         closes.push(Date.now());
       },
