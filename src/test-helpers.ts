@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -81,10 +81,13 @@ export function startSilentTcpServer(opts: { handshake?: boolean } = {}): {
   url: string;
   accepts: number[];
   closes: number[];
+  frames: number;
   stop(): void;
 } {
   const accepts: number[] = [];
   const closes: number[] = [];
+  let frames = 0;
+  let upgraded = false;
   const listener = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
@@ -94,6 +97,10 @@ export function startSilentTcpServer(opts: { handshake?: boolean } = {}): {
       },
       data(socket, data) {
         if (!opts.handshake) return;
+        if (upgraded) {
+          frames++;
+          return;
+        }
         const key = /Sec-WebSocket-Key: (.+)\r\n/i.exec(data.toString())?.[1];
         if (!key) return;
         const accept = createHash("sha1")
@@ -103,6 +110,7 @@ export function startSilentTcpServer(opts: { handshake?: boolean } = {}): {
           "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
             `Sec-WebSocket-Accept: ${accept}\r\n\r\n`,
         );
+        upgraded = true;
       },
       close() {
         closes.push(Date.now());
@@ -113,6 +121,9 @@ export function startSilentTcpServer(opts: { handshake?: boolean } = {}): {
     url: `ws://127.0.0.1:${listener.port}`,
     accepts,
     closes,
+    get frames() {
+      return frames;
+    },
     stop: () => listener.stop(true),
   };
 }
@@ -123,6 +134,28 @@ export function readRawLines(path: string): string[] {
     .toString("utf8")
     .split("\n")
     .filter((l) => l.length > 0);
+}
+
+// その日の stream のファイル (<date>T*.jsonl.gz) を名前順にすべて読む
+export function dayFiles(root: string, stream: string, date: string): string[] {
+  const d = join(root, stream);
+  if (!existsSync(d)) return [];
+  return readdirSync(d)
+    .filter((f) => f.startsWith(`${date}T`) && f.endsWith(".jsonl.gz"))
+    .sort()
+    .map((f) => join(d, f));
+}
+
+export function readDayRaw(root: string, stream: string, date: string): string[] {
+  return dayFiles(root, stream, date).flatMap(readRawLines);
+}
+
+export function readDay(
+  root: string,
+  stream: string,
+  date: string,
+): { recv_at: string; msg: Record<string, unknown> }[] {
+  return dayFiles(root, stream, date).flatMap(readRecords);
 }
 
 export function readRecords(path: string): { recv_at: string; msg: Record<string, unknown> }[] {

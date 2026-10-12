@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { startRecorder, type Recorder, type RecorderOptions, type Subscription } from "./record.ts";
 import { recordPath } from "./sink.ts";
 import {
-  readRawLines,
+  readDay,
+  readDayRaw,
   readRecords,
   startFakeServer,
   startSilentTcpServer,
@@ -100,19 +101,19 @@ afterEach(async () => {
 });
 
 describe("recordPath", () => {
-  test("places a record under channel/symbol/<UTC date>.jsonl.gz", () => {
+  test("names a file channel/symbol/<UTC date>T<HHMMSS.mmm>Z.jsonl.gz after its first receive time", () => {
     expect(recordPath("/x", "orderbooks", "BTC", new Date("2026-10-12T23:59:59.999Z"))).toBe(
-      "/x/orderbooks/BTC/2026-10-12.jsonl.gz",
+      "/x/orderbooks/BTC/2026-10-12T235959.999Z.jsonl.gz",
     );
     expect(recordPath("/x", "trades", "BTC_JPY", new Date("2026-10-13T00:00:00.000Z"))).toBe(
-      "/x/trades/BTC_JPY/2026-10-13.jsonl.gz",
+      "/x/trades/BTC_JPY/2026-10-13T000000.000Z.jsonl.gz",
     );
   });
 
-  test("uses the UTC date even where the local date differs", () => {
+  test("uses UTC even where the local date differs", () => {
     // JST では 2026-10-13 05:00
     expect(recordPath("/x", "trades", "BTC", new Date("2026-10-12T20:00:00.000Z"))).toBe(
-      "/x/trades/BTC/2026-10-12.jsonl.gz",
+      "/x/trades/BTC/2026-10-12T200000.000Z.jsonl.gz",
     );
   });
 });
@@ -192,14 +193,14 @@ describe("writing", () => {
     await Bun.sleep(200);
     await recorder!.stop();
 
-    expect(readRecords(join(dir.path, "orderbooks/BTC/2026-03-04.jsonl.gz"))).toEqual([
+    expect(readDay(dir.path, "orderbooks/BTC", "2026-03-04")).toEqual([
       { recv_at: "2026-03-04T05:06:07.890Z", msg: OB_BTC },
     ]);
-    expect(readRecords(join(dir.path, "trades/BTC/2026-03-04.jsonl.gz"))).toEqual([
+    expect(readDay(dir.path, "trades/BTC", "2026-03-04")).toEqual([
       { recv_at: "2026-03-04T05:06:07.890Z", msg: TRADE_BTC },
     ]);
     // 購読していない組でも、届いたものは捨てずに書く
-    expect(readRecords(join(dir.path, "trades/BTC_JPY/2026-03-04.jsonl.gz"))).toEqual([
+    expect(readDay(dir.path, "trades/BTC_JPY", "2026-03-04")).toEqual([
       { recv_at: "2026-03-04T05:06:07.890Z", msg: TRADE_BTC_JPY },
     ]);
   });
@@ -214,7 +215,7 @@ describe("writing", () => {
     await Bun.sleep(150);
     await recorder!.stop();
 
-    expect(readRawLines(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz"))).toEqual([
+    expect(readDayRaw(dir.path, "trades/BTC", "2026-10-12")).toEqual([
       `{"recv_at":"2026-10-12T10:00:00.000Z","msg":${raw}}`,
     ]);
   });
@@ -228,7 +229,7 @@ describe("writing", () => {
     await Bun.sleep(150);
     await recorder!.stop();
 
-    const lines = readRawLines(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz"));
+    const lines = readDayRaw(dir.path, "trades/BTC", "2026-10-12");
     expect(lines.length).toBe(1);
     expect(JSON.parse(lines[0]!).msg).toEqual(TRADE_BTC);
   });
@@ -250,11 +251,15 @@ describe("writing", () => {
     await Bun.sleep(150);
     await recorder!.stop();
 
-    const day1 = readRecords(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz"));
-    const day2 = readRecords(join(dir.path, "trades/BTC/2026-10-13.jsonl.gz"));
+    const day1 = readDay(dir.path, "trades/BTC", "2026-10-12");
+    const day2 = readDay(dir.path, "trades/BTC", "2026-10-13");
     expect(day1.map((r) => r.msg.price)).toEqual(["13239520"]);
     expect(day2.map((r) => r.msg.price)).toEqual(["13300001"]);
     expect(day2[0]!.recv_at).toBe("2026-10-13T00:00:00.100Z");
+    expect(listFiles(dir.path)).toEqual([
+      "trades/BTC/2026-10-12T235959.900Z.jsonl.gz",
+      "trades/BTC/2026-10-13T000000.100Z.jsonl.gz",
+    ]);
   });
 
   test("makes flushed records readable on disk while still running", async () => {
@@ -263,10 +268,9 @@ describe("writing", () => {
     start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
     await waitFor(() => server.opened === 1);
     server.send(JSON.stringify(TRADE_BTC));
-    const path = join(dir.path, "trades/BTC/2026-10-12.jsonl.gz");
     await waitFor(() => {
       try {
-        return readRecords(path).length === 1;
+        return readDay(dir.path, "trades/BTC", "2026-10-12").length === 1;
       } catch {
         return false;
       }
@@ -285,83 +289,101 @@ describe("writing", () => {
     server.send(JSON.stringify(TRADE_BTC));
     await Bun.sleep(100);
     await recorder!.stop();
-    expect(readRecords(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz")).length).toBe(1);
+    expect(readDay(dir.path, "trades/BTC", "2026-10-12").length).toBe(1);
   });
 
-  test("appends to the same day's file after a restart", async () => {
+  test("writes to a new file after a restart instead of appending to the earlier one", async () => {
     setup();
-    const recvAt = new Date("2026-10-12T10:00:00.000Z");
-    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    start({
+      subscriptions: [{ channel: "trades", symbol: "BTC" }],
+      now: () => new Date("2026-10-12T10:00:00.000Z"),
+    });
     await waitFor(() => server.opened === 1);
     server.send(JSON.stringify(TRADE_BTC));
     await Bun.sleep(150);
     await recorder!.stop();
 
-    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    start({
+      subscriptions: [{ channel: "trades", symbol: "BTC" }],
+      now: () => new Date("2026-10-12T10:05:00.000Z"),
+    });
     await waitFor(() => server.opened === 2);
     server.send(JSON.stringify({ ...TRADE_BTC, side: "SELL", size: "0.777" }));
     await Bun.sleep(150);
     await recorder!.stop();
 
-    const rows = readRecords(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz"));
+    const rows = readDay(dir.path, "trades/BTC", "2026-10-12");
     expect(rows.map((r) => r.msg.size)).toEqual(["0.0001", "0.777"]);
+    expect(listFiles(dir.path)).toEqual([
+      "trades/BTC/2026-10-12T100000.000Z.jsonl.gz",
+      "trades/BTC/2026-10-12T100500.000Z.jsonl.gz",
+    ]);
   });
 
-  test("moves a day file with a broken tail aside before writing, instead of appending after it", async () => {
+  test("leaves a file from an earlier run untouched, even with a torn tail", async () => {
     setup();
-    const recvAt = new Date("2026-10-12T10:00:00.000Z");
-    const path = join(dir.path, "trades/BTC/2026-10-12.jsonl.gz");
     mkdirSync(join(dir.path, "trades/BTC"), { recursive: true });
-    const earlier = `{"recv_at":"2026-10-12T09:00:00.000Z","msg":${JSON.stringify(TRADE_BTC)}}\n`;
-    const cut = gzipSync(earlier);
+    const earlier = join(dir.path, "trades/BTC/2026-10-12T090000.000Z.jsonl.gz");
+    const member = gzipSync(
+      `{"recv_at":"2026-10-12T09:00:00.000Z","msg":${JSON.stringify(TRADE_BTC)}}\n`,
+    );
     // 完結したメンバーの後ろに、途中で切れたメンバーが残っている状態
-    writeFileSync(path, Buffer.concat([cut, cut.subarray(0, cut.length - 6)]));
+    const torn = Buffer.concat([member, member.subarray(0, member.length - 6)]);
+    writeFileSync(earlier, torn);
 
-    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    start({
+      subscriptions: [{ channel: "trades", symbol: "BTC" }],
+      now: () => new Date("2026-10-12T10:00:00.000Z"),
+    });
     await waitFor(() => server.opened === 1);
     server.send(JSON.stringify({ ...TRADE_BTC, size: "0.555" }));
     await Bun.sleep(150);
     await recorder!.stop();
 
-    expect(readRecords(path).map((r) => r.msg.size)).toEqual(["0.555"]);
-    const moved = listFiles(dir.path).filter((f) =>
-      /^trades\/BTC\/2026-10-12\.jsonl\.gz\.corrupt-/.test(f),
-    );
-    expect(moved.length).toBe(1);
-    expect(readFileSync(join(dir.path, moved[0]!)).subarray(0, cut.length)).toEqual(cut);
-    expect(logs.some((l) => l.includes(".corrupt-"))).toBe(true);
+    expect(readFileSync(earlier)).toEqual(torn);
+    expect(
+      readRecords(join(dir.path, "trades/BTC/2026-10-12T100000.000Z.jsonl.gz")).map(
+        (r) => r.msg.size,
+      ),
+    ).toEqual(["0.555"]);
   });
 
-  test("keeps appending to a day file that is intact", async () => {
+  test("stops instead of appending when the file it would create already exists", async () => {
     setup();
-    const recvAt = new Date("2026-10-12T10:00:00.000Z");
-    const path = join(dir.path, "trades/BTC/2026-10-12.jsonl.gz");
     mkdirSync(join(dir.path, "trades/BTC"), { recursive: true });
-    writeFileSync(
-      path,
-      gzipSync(`{"recv_at":"2026-10-12T09:00:00.000Z","msg":${JSON.stringify(TRADE_BTC)}}\n`),
-    );
-
-    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }], now: () => recvAt });
+    const taken = join(dir.path, "trades/BTC/2026-10-12T100000.000Z.jsonl.gz");
+    writeFileSync(taken, "someone else's");
+    start({
+      subscriptions: [{ channel: "trades", symbol: "BTC" }],
+      now: () => new Date("2026-10-12T10:00:00.000Z"),
+    });
     await waitFor(() => server.opened === 1);
-    server.send(JSON.stringify({ ...TRADE_BTC, size: "0.555" }));
-    await Bun.sleep(150);
-    await recorder!.stop();
-
-    expect(readRecords(path).map((r) => r.msg.size)).toEqual(["0.0001", "0.555"]);
-    expect(listFiles(dir.path)).toEqual(["trades/BTC/2026-10-12.jsonl.gz"]);
+    server.send(JSON.stringify(TRADE_BTC));
+    await waitFor(() => fatals.length === 1, 1000);
+    expect(readFileSync(taken, "utf8")).toBe("someone else's");
   });
 
   test("reports a write failure through onFatal and stops recording", async () => {
     setup();
     // trades のディレクトリを作れないように、同じ名前の通常ファイルを置く
     writeFileSync(join(dir.path, "trades"), "");
-    start({ subscriptions: [{ channel: "trades", symbol: "BTC" }] });
+    const recvAt = new Date("2026-10-12T10:00:00.000Z");
+    start({
+      subscriptions: [
+        { channel: "orderbooks", symbol: "BTC" },
+        { channel: "trades", symbol: "BTC" },
+      ],
+      now: () => recvAt,
+    });
     await waitFor(() => server.opened === 1);
+    // 同じ flush で、書ける板の後に書けない約定が来る。捨てるのは約定の 2 行だけ
+    server.send(JSON.stringify(OB_BTC));
+    server.send(JSON.stringify(TRADE_BTC));
     server.send(JSON.stringify(TRADE_BTC));
     await waitFor(() => fatals.length === 1, 1000);
     expect(fatals[0]).toBeInstanceOf(Error);
-    expect(logs.some((l) => /dropped 1 line/.test(l))).toBe(true);
+    expect(logs.some((l) => /dropped 2 line/.test(l))).toBe(true);
+    expect(readDay(dir.path, "orderbooks/BTC", "2026-10-12").length).toBe(1);
     await waitFor(() => server.closed === 1, 1000);
     await Bun.sleep(300);
     expect(server.opened).toBe(1);
@@ -380,7 +402,7 @@ describe("accepting messages", () => {
     await Bun.sleep(200);
     await recorder!.stop();
 
-    expect(readRecords(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz"))).toEqual([
+    expect(readDay(dir.path, "trades/BTC", "2026-10-12")).toEqual([
       { recv_at: "2026-10-12T10:00:00.000Z", msg: TRADE_BTC },
     ]);
     expect(logs.some((l) => l.includes("ERR-5003"))).toBe(true);
@@ -424,8 +446,8 @@ describe("accepting messages", () => {
     await Bun.sleep(200);
     await recorder!.stop();
 
-    expect(listFiles(dir.path)).toEqual(["a/b/c/out/trades/BTC/2026-10-12.jsonl.gz"]);
-    expect(readRecords(join(out, "trades/BTC/2026-10-12.jsonl.gz")).length).toBe(1);
+    expect(listFiles(dir.path)).toEqual(["a/b/c/out/trades/BTC/2026-10-12T100000.000Z.jsonl.gz"]);
+    expect(readDay(out, "trades/BTC", "2026-10-12").length).toBe(1);
   });
 });
 
@@ -449,7 +471,7 @@ describe("recovering", () => {
     server.send(JSON.stringify(TRADE_BTC), 1);
     await Bun.sleep(150);
     await recorder!.stop();
-    expect(readRecords(join(dir.path, "trades/BTC/2026-10-12.jsonl.gz")).length).toBe(1);
+    expect(readDay(dir.path, "trades/BTC", "2026-10-12").length).toBe(1);
   });
 
   test("doubles the reconnect wait up to the maximum and resets it after a message", async () => {
@@ -466,7 +488,7 @@ describe("recovering", () => {
       server.closeConn(seen - 1);
     }
     const gaps = opens.slice(1).map((t, i) => t - opens[i]!);
-    // 50 → 100 → 200 → 400 → 400 (上限)。下限は待ちそのもの、上限は待ち + 余裕
+    // 50 → 100 → 200 → 400 → 400 (上限)。下限はタイマーの誤差 10ms を引いた待ち、上限は待ち + 余裕
     const expected = [50, 100, 200, 400, 400];
     expected.forEach((ms, i) => {
       expect(gaps[i]!).toBeGreaterThanOrEqual(ms - 10);
@@ -547,11 +569,12 @@ describe("recovering", () => {
         idleTimeoutMs: 300,
         backoffInitialMs: 5000,
       });
-      await waitFor(() => silent.accepts.length === 1, 1000);
-      await Bun.sleep(300);
-      const idleAt = Date.now();
-      await waitFor(() => silent.closes.length >= 1, 1000);
-      expect(Date.now() - idleAt).toBeLessThan(500);
+      // 購読のフレームが届いた = handshake を終えて開いた接続になっている
+      await waitFor(() => silent.frames >= 1, 1000);
+      await waitFor(() => silent.closes.length >= 1, 1500);
+      const lived = silent.closes[0]! - silent.accepts[0]!;
+      expect(lived).toBeGreaterThanOrEqual(250);
+      expect(lived).toBeLessThan(800);
     } finally {
       await recorder?.stop();
       recorder = undefined;

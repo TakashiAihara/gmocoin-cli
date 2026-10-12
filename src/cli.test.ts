@@ -57,15 +57,30 @@ test("record rejects a symbol that is not upper-case letters, digits and undersc
   expect(server.opened).toBe(0);
 });
 
-test("record exits 0 on SIGTERM", async () => {
+test("record writes what it has buffered and exits 0 on SIGTERM", async () => {
   server = startFakeServer();
   dir = tempDir();
   const p = spawnCli(["record", "--channel", "trades", "--out", dir.path], {
     GMOCOIN_PUBLIC_WS_URL: server.url,
   });
   await waitFor(() => server!.received.length >= 1, 5000);
+  const trade = {
+    channel: "trades",
+    price: "13239520",
+    side: "BUY",
+    size: "0.0001",
+    symbol: "BTC",
+    timestamp: "2026-10-12T10:16:12.956Z",
+  };
+  server.send(JSON.stringify(trade));
+  // 既定の flush 間隔 (5 秒) より前に止める
+  await Bun.sleep(300);
   p.kill("SIGTERM");
   expect(await p.exited).toBe(0);
+
+  const files = readdirSync(join(dir.path, "trades/BTC"));
+  expect(files.length).toBe(1);
+  expect(readRecords(join(dir.path, "trades/BTC", files[0]!)).map((r) => r.msg)).toEqual([trade]);
 }, 10_000);
 
 test("record exits 1 when it cannot write", async () => {
