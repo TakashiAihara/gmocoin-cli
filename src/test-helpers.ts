@@ -11,6 +11,7 @@ export type FakeServer = {
   received: Received[];
   connections: ServerWebSocket<{ id: number }>[];
   opened: number;
+  closed: number;
   send(text: string, conn?: number): void;
   closeConn(conn?: number): void;
   stop(): void;
@@ -23,6 +24,7 @@ export function startFakeServer(): FakeServer {
     received: [],
     connections: [],
     opened: 0,
+    closed: 0,
     send(text, conn) {
       const ws = state.connections[conn ?? state.connections.length - 1];
       if (!ws) throw new Error("no connection");
@@ -50,6 +52,9 @@ export function startFakeServer(): FakeServer {
       message(ws, msg) {
         state.received.push({ conn: ws.data.id, at: Date.now(), text: String(msg) });
       },
+      close() {
+        state.closed++;
+      },
     },
   });
   state.url = `ws://127.0.0.1:${server.port}`;
@@ -67,6 +72,34 @@ export async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<vo
 export function tempDir(): { path: string; cleanup(): void } {
   const path = mkdtempSync(join(tmpdir(), "gmocoin-test-"));
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
+}
+
+// 受け付けるだけで HTTP の upgrade を返さない TCP サーバー。接続が始まらないまま止まる相手を作る
+export function startSilentTcpServer(): { url: string; accepts: number[]; stop(): void } {
+  const accepts: number[] = [];
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open() {
+        accepts.push(Date.now());
+      },
+      data() {},
+    },
+  });
+  return {
+    url: `ws://127.0.0.1:${listener.port}`,
+    accepts,
+    stop: () => listener.stop(true),
+  };
+}
+
+export function readRawLines(path: string): string[] {
+  if (!existsSync(path)) return [];
+  return gunzipSync(readFileSync(path))
+    .toString("utf8")
+    .split("\n")
+    .filter((l) => l.length > 0);
 }
 
 export function readRecords(path: string): { recv_at: string; msg: Record<string, unknown> }[] {

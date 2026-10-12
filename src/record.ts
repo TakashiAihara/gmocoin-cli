@@ -18,6 +18,7 @@ export type RecorderOptions = {
   flushIntervalMs?: number;
   now?: () => Date;
   log?: (line: string) => void;
+  onFatal?: (err: Error) => void;
 };
 
 export type Recorder = {

@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Subprocess } from "bun";
 import { readRecords, startFakeServer, tempDir, waitFor, type FakeServer } from "./test-helpers.ts";
 
 const CLI = join(import.meta.dir, "cli.ts");
@@ -7,7 +9,11 @@ const CLI = join(import.meta.dir, "cli.ts");
 let server: FakeServer | undefined;
 let dir: { path: string; cleanup(): void } | undefined;
 
+let procs: Subprocess[] = [];
+
 afterEach(() => {
+  for (const p of procs) p.kill("SIGKILL");
+  procs = [];
   server?.stop();
   dir?.cleanup();
   server = undefined;
@@ -15,11 +21,13 @@ afterEach(() => {
 });
 
 function spawnCli(args: string[], env: Record<string, string> = {}) {
-  return Bun.spawn(["bun", CLI, ...args], {
+  const p = Bun.spawn(["bun", CLI, ...args], {
     env: { ...process.env, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
+  procs.push(p);
+  return p;
 }
 
 test("--help lists the record command", async () => {
@@ -28,11 +36,58 @@ test("--help lists the record command", async () => {
   expect(await new Response(p.stdout).text()).toContain("record");
 });
 
-test("record rejects a channel other than orderbooks and trades", async () => {
-  const p = spawnCli(["record", "--channel", "ticker"]);
+test("record rejects a channel other than orderbooks and trades before connecting", async () => {
+  server = startFakeServer();
+  dir = tempDir();
+  const out = join(dir.path, "out");
+  const p = spawnCli(["record", "--channel", "ticker", "--out", out], {
+    GMOCOIN_PUBLIC_WS_URL: server.url,
+  });
   expect(await p.exited).not.toBe(0);
   expect(await new Response(p.stderr).text()).toContain("ticker");
+  expect(server.opened).toBe(0);
+  expect(existsSync(out)).toBe(false);
 });
+
+test("record rejects a symbol that is not upper-case letters, digits and underscores", async () => {
+  server = startFakeServer();
+  const p = spawnCli(["record", "--symbol", "../BTC"], { GMOCOIN_PUBLIC_WS_URL: server.url });
+  expect(await p.exited).not.toBe(0);
+  expect(await new Response(p.stderr).text()).toContain("../BTC");
+  expect(server.opened).toBe(0);
+});
+
+test("record exits 0 on SIGTERM", async () => {
+  server = startFakeServer();
+  dir = tempDir();
+  const p = spawnCli(["record", "--channel", "trades", "--out", dir.path], {
+    GMOCOIN_PUBLIC_WS_URL: server.url,
+  });
+  await waitFor(() => server!.received.length >= 1, 5000);
+  p.kill("SIGTERM");
+  expect(await p.exited).toBe(0);
+}, 10_000);
+
+test("record exits 1 when it cannot write", async () => {
+  server = startFakeServer();
+  dir = tempDir();
+  writeFileSync(join(dir.path, "trades"), "");
+  const p = spawnCli(["record", "--channel", "trades", "--out", dir.path], {
+    GMOCOIN_PUBLIC_WS_URL: server.url,
+  });
+  await waitFor(() => server!.received.length >= 1, 5000);
+  server.send(
+    JSON.stringify({
+      channel: "trades",
+      price: "13239520",
+      side: "BUY",
+      size: "0.0001",
+      symbol: "BTC",
+      timestamp: "2026-10-12T10:16:12.956Z",
+    }),
+  );
+  expect(await p.exited).toBe(1);
+}, 15_000);
 
 test("record subscribes orderbooks and trades of BTC by default", async () => {
   server = startFakeServer();
