@@ -64,5 +64,5 @@ gmocoin record --symbol BTC --symbol BTC_JPY --channel orderbooks --out /srv/gmo
 - 注文・Private API
 - 過去の約定の取得 (日次 CSV `https://api.coin.z.com/data/trades/BTC/YYYY/MM/YYYYMMDD_BTC.csv.gz` が公開されている。別 issue)
 - 板の差分化・正規化 (記録は生のまま。再現は読む側でやる)
-- 出来高の少ない銘柄で 60 秒の無通信が普通に起きる場合の調整 (今は BTC / BTC_JPY だけを想定)
+- 60 秒の無通信が普通に起きる購読の調整。`--channel trades` だけだと閑散時に起きる (2026-10-12 20 時台に BTC の約定が 90 秒で 1 件)。既定の板を含む購読では板が約 2 件/秒届くので起きない
 - ディスク満杯で途中まで書かれた gzip メンバーの修復 (書き込み失敗で止まるので、次の起動前に人が見る)

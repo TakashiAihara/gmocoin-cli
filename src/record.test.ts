@@ -89,8 +89,9 @@ function setup() {
 
 afterEach(async () => {
   await recorder?.stop();
-  server.stop();
-  dir.cleanup();
+  // recordPath のテストは setup を呼ばない
+  server?.stop();
+  dir?.cleanup();
 });
 
 describe("recordPath", () => {

@@ -1,5 +1,6 @@
+import { join } from "node:path";
 import type { Channel } from "./record.ts";
 
-export function recordPath(_outDir: string, _channel: Channel, _symbol: string, _at: Date): string {
-  throw new Error("not implemented");
+export function recordPath(outDir: string, channel: Channel, symbol: string, at: Date): string {
+  return join(outDir, channel, symbol, `${at.toISOString().slice(0, 10)}.jsonl.gz`);
 }

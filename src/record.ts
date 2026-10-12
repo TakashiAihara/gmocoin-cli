@@ -1,3 +1,8 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import { gzipSync } from "node:zlib";
+import { recordPath } from "./sink.ts";
+
 export type Channel = "orderbooks" | "trades";
 
 export const CHANNELS: readonly Channel[] = ["orderbooks", "trades"];
@@ -25,6 +30,174 @@ export type Recorder = {
   stop(): Promise<void>;
 };
 
-export function startRecorder(_opts: RecorderOptions): Recorder {
-  throw new Error("not implemented");
+const SYMBOL_PATTERN = /^[A-Z0-9_]+$/;
+
+function parseAccepted(text: string): Subscription | undefined {
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof msg !== "object" || msg === null || Array.isArray(msg)) return undefined;
+
+  const { channel, symbol } = msg as Record<string, unknown>;
+  if (typeof channel !== "string" || !(CHANNELS as readonly string[]).includes(channel)) {
+    return undefined;
+  }
+  if (typeof symbol !== "string" || !SYMBOL_PATTERN.test(symbol)) return undefined;
+
+  return { channel: channel as Channel, symbol };
+}
+
+export function startRecorder(opts: RecorderOptions): Recorder {
+  const {
+    url,
+    outDir,
+    subscribeIntervalMs = 1100,
+    backoffInitialMs = 1000,
+    backoffMaxMs = 60_000,
+    idleTimeoutMs = 60_000,
+    statsIntervalMs = 60_000,
+    flushIntervalMs = 5000,
+    now = () => new Date(),
+    log = (line: string) => console.error(line),
+  } = opts;
+  const onFatal = opts.onFatal ?? ((err: Error) => log(`fatal: ${err.message}`));
+
+  const subscriptions = [
+    ...new Map(opts.subscriptions.map((s) => [`${s.channel}/${s.symbol}`, s])).values(),
+  ];
+  const counts = new Map<string, number>(subscriptions.map((s) => [`${s.channel}/${s.symbol}`, 0]));
+  const buffers = new Map<string, string[]>();
+
+  let ws: WebSocket | undefined;
+  let stopped = false;
+  let backoff = backoffInitialMs;
+  let lastSubscribeAt = Number.NEGATIVE_INFINITY;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let subscribeTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const flushTimer = setInterval(flush, flushIntervalMs);
+  const statsTimer = setInterval(() => {
+    log(`stats ${[...counts].map(([k, n]) => `${k}=${n}`).join(" ")}`);
+  }, statsIntervalMs);
+
+  function closeSocket(sock: WebSocket) {
+    sock.onopen = sock.onmessage = sock.onclose = sock.onerror = null;
+    try {
+      sock.close();
+    } catch {}
+  }
+
+  function halt() {
+    stopped = true;
+    clearInterval(flushTimer);
+    clearInterval(statsTimer);
+    clearTimeout(idleTimer);
+    clearTimeout(subscribeTimer);
+    clearTimeout(reconnectTimer);
+    if (ws) closeSocket(ws);
+    ws = undefined;
+  }
+
+  function flush() {
+    const pending = [...buffers];
+    buffers.clear();
+    try {
+      for (const [path, lines] of pending) {
+        mkdirSync(dirname(path), { recursive: true });
+        appendFileSync(path, gzipSync(lines.join("")));
+      }
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      halt();
+      log(`write failed: ${err.message}`);
+      onFatal(err);
+    }
+  }
+
+  function armIdle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (ws) drop(ws, `no valid message for ${idleTimeoutMs}ms`);
+    }, idleTimeoutMs);
+  }
+
+  function drop(sock: WebSocket, reason: string) {
+    log(`disconnected: ${reason}`);
+    closeSocket(sock);
+    ws = undefined;
+    clearTimeout(idleTimer);
+    clearTimeout(subscribeTimer);
+
+    const wait = backoff;
+    backoff = Math.min(backoff * 2, backoffMaxMs);
+    reconnectTimer = setTimeout(connect, wait);
+  }
+
+  function subscribeAll(sock: WebSocket) {
+    let i = 0;
+    const next = () => {
+      if (i >= subscriptions.length) return;
+
+      const wait = lastSubscribeAt + subscribeIntervalMs - Date.now();
+      if (wait > 0) {
+        subscribeTimer = setTimeout(next, wait);
+        return;
+      }
+      sock.send(JSON.stringify({ command: "subscribe", ...subscriptions[i] }));
+      lastSubscribeAt = Date.now();
+      i++;
+      next();
+    };
+    next();
+  }
+
+  function receive(text: string) {
+    const at = now();
+    const accepted = parseAccepted(text);
+    if (!accepted) {
+      log(`skipped message: ${text}`);
+      return;
+    }
+
+    armIdle();
+    backoff = backoffInitialMs;
+
+    const key = `${accepted.channel}/${accepted.symbol}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+
+    const path = recordPath(outDir, accepted.channel, accepted.symbol, at);
+    const line = `{"recv_at":"${at.toISOString()}","msg":${text.replace(/[\r\n]/g, " ")}}\n`;
+    const lines = buffers.get(path);
+    if (lines) lines.push(line);
+    else buffers.set(path, [line]);
+  }
+
+  function connect() {
+    if (stopped) return;
+    const sock = new WebSocket(url);
+    ws = sock;
+    armIdle();
+
+    sock.onopen = () => subscribeAll(sock);
+    sock.onmessage = (ev) => {
+      if (typeof ev.data === "string") receive(ev.data);
+      else log("skipped message: non-text frame");
+    };
+    sock.onclose = () => drop(sock, "closed");
+    sock.onerror = () => drop(sock, "error");
+  }
+
+  connect();
+
+  return {
+    async stop() {
+      if (stopped) return;
+      flush();
+      halt();
+    },
+  };
 }
