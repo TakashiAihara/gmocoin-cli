@@ -109,8 +109,8 @@ function isStep(x: number, unit: number): boolean {
   return Math.abs(n - Math.round(n)) < 1e-6;
 }
 
-// 同じ値段に並んでいる量。板の内側 (スプレッド内) なら前に誰もいない 0、見えている最も外の値段より
-// さらに外なら見えない所に前の注文がいるとみなして無限大
+// 同じ値段に並んでいる量。板に無い値段は、内側 (スプレッド内や見えている値段の間) なら誰も並んでいない 0、
+// 見えている最も外の値段よりさらに外なら見えない所に前の注文がいるとみなして無限大
 function queueAt(levels: Level[], side: Side, price: number): number {
   const exact = levels.find((l) => l.price === price);
   if (exact) return exact.size;
@@ -134,6 +134,17 @@ function walk(levels: Level[], size: number): number | undefined {
     if (remaining <= EPS) return notional;
   }
   return undefined;
+}
+
+function consume(levels: Level[], size: number): Level[] {
+  let remaining = size;
+  const left: Level[] = [];
+  for (const l of levels) {
+    const take = Math.min(remaining, l.size);
+    remaining -= take;
+    if (l.size - take > EPS) left.push({ price: l.price, size: l.size - take });
+  }
+  return left;
 }
 
 export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult> {
@@ -221,6 +232,9 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       return;
     }
     fill(id, t, action.side, notional / action.size, action.size, "taker");
+    // 同じイベントで効く次の成行が、食い終わった板をもう一度食わないように減らしておく
+    const left = consume(levels, action.size);
+    book = action.side === "BUY" ? { ...book, asks: left } : { ...book, bids: left };
   };
 
   const execTradeMarket = (w: Waiting, price: number, t: number) => {
@@ -385,6 +399,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       const b = { t: e.t, asks: e.asks, bids: e.bids };
       applyBook(b);
       notify(e.t);
+      sample();
       queue(strategy.onBook?.(b, ctx(e.t)), e.t);
     }
   }

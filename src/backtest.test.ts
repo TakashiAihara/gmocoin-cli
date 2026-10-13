@@ -504,3 +504,46 @@ test("ctx.pending shows orders that have not taken effect yet", async () => {
   ]);
   expect(seen.find((s) => s.t === 600)!.ctx.pending).toEqual([]);
 });
+
+test("book model: market orders taking effect together share the visible book", async () => {
+  const { fills, rejects } = await run(
+    [
+      bk(
+        1,
+        [
+          [5_000_000, 0.0003],
+          [5_000_100, 1],
+        ],
+        [[4_999_000, 1]],
+      ),
+      tr(2, "BUY", 5_000_000, 0.0001),
+    ],
+    {
+      1: [
+        { type: "market", side: "BUY", size: 0.0003, id: "a" },
+        { type: "market", side: "BUY", size: 0.0003, id: "b" },
+      ],
+    },
+    "book",
+  );
+  expect(rejects).toEqual([]);
+  expect(fills.map((f) => [f.id, f.price])).toEqual([
+    ["a", 5_000_000],
+    ["b", 5_000_100],
+  ]);
+});
+
+test("book model: drawdown is also measured on book events", async () => {
+  const { result } = await run(
+    [
+      bk(1, [[5_000_000, 1]], [[4_999_000, 1]]),
+      bk(2, [[5_000_000, 1]], [[4_999_000, 1]]),
+      bk(3, [[2_000_001, 1]], [[2_000_000, 1]]),
+      bk(4, [[5_000_000, 1]], [[4_999_000, 1]]),
+    ],
+    { 1: [{ type: "market", side: "BUY", size: 0.001 }] },
+    "book",
+  );
+  // 最良買い 2,000,000 での評価 4,997.5 + 2,000 = 6,997.5 が、資金 10,000 からの谷
+  expect(result.maxDrawdownPct).toBeCloseTo(30.025, 9);
+});
