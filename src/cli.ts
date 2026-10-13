@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import { runBacktest, type StrategyFactory } from "./backtest.ts";
@@ -121,9 +121,17 @@ async function backtestReport(opts: BacktestOpts) {
 
   const results = [];
   for (const period of periods) {
+    // 取得は全期間で 1 回にし、読むのはその期間を覆うファイルだけにする
+    const names = new Set(
+      csvFileDates(period.from, period.to).map((d) => `${d}_${opts.symbol}.csv.gz`),
+    );
     const events =
       opts.source === "csv"
-        ? csvEvents({ paths, from: period.from, to: period.to })
+        ? csvEvents({
+            paths: paths.filter((p) => names.has(basename(p))),
+            from: period.from,
+            to: period.to,
+          })
         : recordEvents({
             dataDir: opts.data,
             symbol: opts.symbol,
