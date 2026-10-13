@@ -547,3 +547,18 @@ test("book model: drawdown is also measured on book events", async () => {
   // 最良買い 2,000,000 での評価 4,997.5 + 2,000 = 6,997.5 が、資金 10,000 からの谷
   expect(result.maxDrawdownPct).toBeCloseTo(30.025, 9);
 });
+
+test("book model: limits at one price share a trade instead of each filling from all of it", async () => {
+  const { fills } = await run(
+    [BOOK(1), tr(2, "SELL", 4_999_500, 0.0004)],
+    {
+      1: [
+        { type: "limit", side: "BUY", price: 4_999_500, size: 0.001, id: "a" },
+        { type: "limit", side: "BUY", price: 4_999_500, size: 0.001, id: "b" },
+      ],
+    },
+    "book",
+  );
+  expect(fills.map((f) => f.id)).toEqual(["a"]);
+  expect(fills[0]!.size).toBeCloseTo(0.0004, 12);
+});

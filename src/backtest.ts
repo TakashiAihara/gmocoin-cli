@@ -317,6 +317,9 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     if (!bookModel) {
       for (const w of waiting.splice(0)) execTradeMarket(w, e.price, e.t);
     }
+    // 同じ約定を自分の複数の指値で二重に使わないよう、使った量を引いていく。後ろの指値の前の量は
+    // 前の指値が使った分を減らさないので、約定は少なめに出る
+    let tradeLeft = e.size;
     for (const r of resting) {
       const remaining = r.size - r.filled;
       const through = r.side === "BUY" ? e.price < r.price : e.price > r.price;
@@ -324,9 +327,10 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       if (through) {
         size = remaining;
       } else if (bookModel && e.price === r.price && e.side !== r.side) {
-        const use = Math.min(r.queueAhead, e.size);
+        const use = Math.min(r.queueAhead, tradeLeft);
         r.queueAhead -= use;
-        size = Math.min(remaining, e.size - use);
+        size = Math.min(remaining, tradeLeft - use);
+        tradeLeft -= use + size;
       }
       if (size > EPS) {
         fill(r.id, e.t, r.side, r.price, size, "maker");
