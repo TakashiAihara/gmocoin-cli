@@ -36,3 +36,24 @@ ExecStart=/home/me/.local/share/mise/shims/bun /opt/gmocoin-cli/src/cli.ts recor
 Restart=on-failure
 RestartSec=10
 ```
+
+## backtest
+
+Replays trades through a strategy and prints a JSON result. The strategy is a file whose default export is a factory returning `{ onTrade?, onBook?, onFill?, onReject? }`; see `strategies/sma-cross.ts` for a sample and `docs/design/backtest.md` for the contract.
+
+Split a long range into a train period and a test period. The test period decides `pass` (PnL above zero and max drawdown at most 20%):
+
+```sh
+bun src/cli.ts backtest --strategy strategies/sma-cross.ts --from 2021-01-01 --to 2026-10-01 --split 2025-01-01
+```
+
+Replay recorded orderbooks and trades from `record` (books and trades are matched by time, so this only covers days you recorded):
+
+```sh
+bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --data /srv/gmocoin --from 2026-10-13 --to 2026-10-14
+```
+
+- `--from` is inclusive and `--to` is exclusive. A `YYYY-MM-DD` value means UTC midnight; ISO 8601 with a zone is also accepted.
+- `--source csv` (default) downloads the daily trade CSVs into `<data>/csv/<symbol>/` on first use. Set `GMOCOIN_TRADES_CSV_URL` to point at another mirror.
+- `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0).
+- A period with no fills exits 1. Otherwise the exit code is 0 whether or not the strategy passes.

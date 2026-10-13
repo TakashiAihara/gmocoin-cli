@@ -465,3 +465,13 @@ test("events can be an async iterable", async () => {
   expect(result.takerFills).toBe(1);
   expect(result.events).toBe(2);
 });
+
+test("book model: a position bought before any trade is valued at the best bid", async () => {
+  const { fills, result } = await run(
+    [bk(1, [[5_000_000, 1]], [[4_000_000, 1]]), bk(2, [[5_000_000, 1]], [[4_000_000, 1]])],
+    { 1: [{ type: "market", side: "BUY", size: 0.001 }] },
+    "book",
+  );
+  expect(fills).toHaveLength(1);
+  expect(result.endEquity).toBeCloseTo(10_000 - 5000 - 2.5 + 4000, 9);
+});
