@@ -232,7 +232,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       return;
     }
     fill(id, t, action.side, notional / action.size, action.size, "taker");
-    // 同じイベントで効く次の成行が、食い終わった板をもう一度食わないように減らしておく
+    // 後から効く成行が食い終わった板をもう一度食わないように減らしておく。次の板が届くまでは
+    // ctx.book も指値の前の量の基準もこの減った板になる (板は少なめに見える側)
     const left = consume(levels, action.size);
     book = action.side === "BUY" ? { ...book, asks: left } : { ...book, bids: left };
   };
@@ -291,10 +292,12 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       }
       cross = lastPrice;
     }
-    const crosses =
-      cross !== undefined &&
-      (action.side === "BUY" ? action.price >= cross : action.price <= cross);
-    if (crosses) {
+    // 反対側が空の板では、どの値段なら取る側にならないかが分からない
+    if (cross === undefined) {
+      reject(id, t, action, "the opposite side of the book is empty");
+      return;
+    }
+    if (action.side === "BUY" ? action.price >= cross : action.price <= cross) {
       reject(id, t, action, "post-only order would take liquidity");
       return;
     }

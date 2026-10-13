@@ -562,3 +562,49 @@ test("book model: limits at one price share a trade instead of each filling from
   expect(fills.map((f) => f.id)).toEqual(["a"]);
   expect(fills[0]!.size).toBeCloseTo(0.0004, 12);
 });
+
+test("book model: market sells taking effect together share the bids", async () => {
+  const B = (t: number) =>
+    bk(
+      t,
+      [[5_000_000, 1]],
+      [
+        [4_999_000, 0.0003],
+        [4_998_000, 1],
+      ],
+    );
+  const { fills } = await run(
+    [B(1), B(2), B(3)],
+    {
+      1: [{ type: "market", side: "BUY", size: 0.0006 }],
+      2: [
+        { type: "market", side: "SELL", size: 0.0003, id: "a" },
+        { type: "market", side: "SELL", size: 0.0003, id: "b" },
+      ],
+    },
+    "book",
+  );
+  expect(fills.filter((f) => f.side === "SELL").map((f) => [f.id, f.price])).toEqual([
+    ["a", 4_999_000],
+    ["b", 4_998_000],
+  ]);
+});
+
+test("book model: a limit is rejected when the opposite side of the book is empty", async () => {
+  const { fills, rejects } = await run(
+    [
+      bk(1, [[5_000_000, 0.0003]], [[4_999_000, 1]]),
+      tr(2, "BUY", 5_000_000, 1),
+      tr(3, "SELL", 5_100_000, 1),
+    ],
+    {
+      1: [
+        { type: "market", side: "BUY", size: 0.0003, id: "m" },
+        { type: "limit", side: "BUY", price: 6_000_000, size: 0.0001, id: "l" },
+      ],
+    },
+    "book",
+  );
+  expect(fills.map((f) => f.id)).toEqual(["m"]);
+  expect(rejects.map((r) => r.id)).toEqual(["l"]);
+});

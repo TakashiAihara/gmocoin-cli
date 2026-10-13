@@ -193,7 +193,7 @@ test("backtest exits 1 naming the day when a CSV is not published", async () => 
   expect(r.stdout).toBe("");
 });
 
-test("backtest exits 1 when a period has no trades instead of reporting a zero result", async () => {
+test("backtest exits 1 when a period has no market data instead of reporting a zero result", async () => {
   const { strategy, data, url } = setup(BOTH_DAYS);
   const r = await backtest(
     [
@@ -211,7 +211,7 @@ test("backtest exits 1 when a period has no trades instead of reporting a zero r
     url,
   );
   expect(r.code).toBe(1);
-  expect(r.stderr).toContain("train");
+  expect(r.stderr).toContain('period "train" has no market data');
   expect(r.stdout).toBe("");
 });
 
