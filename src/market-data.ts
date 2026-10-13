@@ -40,16 +40,23 @@ export async function ensureCsv(opts: {
   symbol: string;
   date: string;
   baseUrl: string;
+  timeoutMs?: number;
 }): Promise<string> {
-  const { dataDir, symbol, date, baseUrl } = opts;
+  const { dataDir, symbol, date, baseUrl, timeoutMs = 60_000 } = opts;
   const dir = join(dataDir, "csv", symbol);
   const path = join(dir, `${date}_${symbol}.csv.gz`);
   if (existsSync(path)) return path;
 
   const url = `${baseUrl}/${symbol}/${date.slice(0, 4)}/${date.slice(4, 6)}/${date}_${symbol}.csv.gz`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`CSV for ${date} is not available (HTTP ${res.status}): ${url}`);
-  const body = Buffer.from(await res.arrayBuffer());
+  // 数千日分を 1 本ずつ取るので、1 本が止まると全体が終わらないまま何も言わなくなる
+  let body: Buffer;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    body = Buffer.from(await res.arrayBuffer());
+  } catch (err) {
+    throw new Error(`CSV for ${date} is not available (${(err as Error).message}): ${url}`);
+  }
 
   await mkdir(dir, { recursive: true });
   // 途中で切れた取得が cache として残ると次回から壊れたまま使われるので、rename で一度に見せる

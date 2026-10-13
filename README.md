@@ -39,7 +39,7 @@ RestartSec=10
 
 ## backtest
 
-Replays trades through a strategy and prints a JSON result. The strategy is a file whose default export is a factory returning `{ onTrade?, onBook?, onFill?, onReject? }`; see `strategies/sma-cross.ts` for a sample and `docs/design/backtest.md` for the contract.
+Replays trades through a strategy and prints a JSON result. The strategy is a file whose default export is a factory returning `{ onTrade?, onBook?, onFill?, onReject? }`; see `strategies/sma-cross.ts` for the file format (it only shows the shape: as a taker on every cross it loses most of its capital to fees) and `docs/design/backtest.md` for the contract.
 
 Split a long range into a train period and a test period. The test period decides `pass` (PnL above zero and max drawdown at most 20%):
 
@@ -56,4 +56,4 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 - `--from` is inclusive and `--to` is exclusive. A `YYYY-MM-DD` value means UTC midnight; ISO 8601 with a zone is also accepted.
 - `--source csv` (default) downloads the daily trade CSVs into `<data>/csv/<symbol>/` on first use. Set `GMOCOIN_TRADES_CSV_URL` to point at another mirror.
 - `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0).
-- A period with no fills exits 1. Otherwise the exit code is 0 whether or not the strategy passes.
+- A period with no market data exits 1. Otherwise the exit code is 0 whether or not the strategy passes.

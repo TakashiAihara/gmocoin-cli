@@ -7,7 +7,7 @@
 - 指値は Post-only (GMO の `SOK`) として扱う。record では板の待ち行列を再現して約定させ、csv では価格を突き抜けた約定が出たときだけ約定させる
 - 手数料は Maker -0.01% (受け取り) / Taker 0.05% を JPY で計上する。成行は record では板を食って約定価格がずれ、csv では次の約定価格に `--slippage-bps` を不利な側に足す
 - `--split` で学習用と検証用の期間を分け、それぞれ新しい口座と新しい戦略で回す。検証用の期間で計画の成功基準 (手数料込みの損益 > 0、最大ドローダウン ≤ 20%) を満たすかを `pass` で出す
-- 結果は stdout に JSON、進み具合と警告は stderr
+- 結果は stdout に JSON、CSV の取得 (1 日 1 行) と警告は stderr
 
 ## 使い方
 
@@ -21,7 +21,7 @@ gmocoin backtest --strategy strategies/sma-cross.ts --source record --data /srv/
 - `--split <time>`: 学習用 `[from, split)` と検証用 `[split, to)` に分ける。無ければ全体を 1 期間 (`all`) で回す
 - `--source <csv|record>` (既定 `csv`)
 - `--data <dir>` (既定 `./data`): csv はキャッシュを `<data>/csv/<symbol>/` に置き、record は `<data>/orderbooks/<symbol>/` と `<data>/trades/<symbol>/` を読む (`gmocoin record --out` と同じディレクトリ)
-- `--symbol <symbol>` (既定 `BTC`)
+- `--symbol <symbol>` (既定 `BTC`): 今は `BTC` だけを受け付ける。手数料・数量と値段の刻みを BTC 現物の値で固定しているため
 - `--capital <jpy>` (既定 `10000`)
 - `--latency-ms <ms>` (既定 `0`): 注文と取消が効くまでの遅れ
 - `--slippage-bps <bps>` (既定 `0`): csv の成行の約定価格を不利な側にずらす量。record では使わない (板を食うぶんがスリッページ)
@@ -49,7 +49,7 @@ gmocoin backtest --strategy strategies/sma-cross.ts --source record --data /srv/
 ## 取得とキャッシュ (csv)
 
 - 期間に要るファイル (`from` を含むファイルから `to` の直前を含むファイルまで。ファイル `D` は UTC の前日 21:00 から当日 21:00) が `<data>/csv/<symbol>/<YYYYMMDD>_<symbol>.csv.gz` に無ければ 1 本ずつ取得する。取得は一時ファイルに書いてから rename するので、途中で落ちても壊れたキャッシュは残らない
-- 取得に失敗したら (404 / 403 / 通信エラー) その日付を名指しして exit 1。まだ公開されていない日を含む期間を指定したときもここで止まる
+- 取得に失敗したら (404 / 403 / 通信エラー / 60 秒応答が無い) その日付を名指しして exit 1。まだ公開されていない日を含む期間を指定したときもここで止まる
 - 期間外の行は読み飛ばす
 
 ## 戦略ファイル
@@ -68,7 +68,7 @@ export default function (): Strategy {
 
 - default export は引数なしの関数で、期間ごとに 1 回呼ばれる。状態は戻り値のオブジェクトに閉じ込める (学習用の状態が検証用に漏れない)
 - コールバックは `onTrade` / `onBook` / `onFill` / `onReject` で、どれも任意。戻り値はアクションの配列か無し
-- `ctx` は `time` (ms)、`cash` (JPY)、`position` (BTC)、`lastPrice`、`book` (record の最新の板。csv では無し)、`openOrders`
+- `ctx` は `time` (ms)、`cash` (JPY)、`position` (BTC)、`lastPrice`、`book` (record の最新の板。csv では無し)、`openOrders` (板に置かれている指値)、`pending` (まだ効いていない注文と取消。`--latency-ms` の間に同じ注文を出し直さないために見る)
 - アクションは `{type:"market", side, size}` / `{type:"limit", side, price, size}` / `{type:"cancel", id}`。`market` と `limit` には戦略が付けた `id` を任意で載せられ、`onFill` / `onReject` に返る
 - 数量は 0.00001 BTC 単位、指値は 1 円単位 (GMO の BTC 現物の `minOrderSize` / `sizeStep` / `tickSize`)。外れたら拒否する
 - 現物だけを扱う。買いは使える現金 (指値の買いで押さえた分を除く) を、売りは持っている BTC (指値の売りで押さえた分を除く) を超えると拒否する
@@ -121,11 +121,11 @@ flowchart TD
 }
 ```
 
-- 評価額 = 現金 + 保有 BTC × 直前の約定価格。期末に保有が残っても売らず、この評価額で数える
-- 最大ドローダウンは約定のたびの評価額で、それまでの最高値からの下落率の最大
+- 評価額 = 現金 + 保有 BTC × 直前の約定価格 (板モードで約定がまだ無ければ最良買い)。期末の評価額 (`endEquity`) だけは、残った BTC を売ったものとして Taker 手数料を引く (買って持つだけの戦略が出口の手数料を払わずに済まないように)
+- 最大ドローダウンは約定のたびの評価額で、それまでの最高値 (初期値は資金) からの下落率の最大。計画の「資金の 20% 以内」は、この最高値からの下落率で読む
 - `feesJpy` は払った手数料から受け取った手数料を引いた額 (マイナスなら受け取りが多い)
 - `pass` は検証用の期間 (`--split` が無ければ `all`) で `pnl > 0` かつ `maxDrawdownPct <= 20`。exit code は `pass` に関係なく 0
-- 期間内に約定が 1 件も無ければ、その期間は回さず stderr に出して exit 1 (データが無いのに損益 0 の結果を出さない)
+- 期間内に市場のイベント (約定・板) が 1 件も無ければ、stderr に出して exit 1 (データが無いのに損益 0 の結果を出さない)。戦略が 1 度も約定しなかっただけなら、`fills: 0` の結果をそのまま出す
 
 ## やらないこと
 

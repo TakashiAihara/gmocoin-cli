@@ -22,7 +22,7 @@ export default function smaCross(): Strategy {
       const nowAbove = average(prices.slice(-SHORT)) > average(prices);
       const crossed = above !== undefined && nowAbove !== above;
       above = nowAbove;
-      if (!crossed) return;
+      if (!crossed || ctx.pending.length > 0) return;
 
       if (nowAbove && ctx.position === 0) return [{ type: "market", side: "BUY", size: SIZE }];
       if (!nowAbove && ctx.position > 0) {

@@ -38,6 +38,8 @@ export type Ctx = {
   lastPrice: number | undefined;
   book: Book | undefined;
   openOrders: readonly OpenOrder[];
+  // まだ効いていない (latency 待ちの) 注文と取消。同じ注文の出し直しを避けるために見る
+  pending: readonly Action[];
 };
 
 type Actions = Action[] | void;
@@ -348,6 +350,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       size,
       filled,
     })),
+    pending: pending.map((p) => p.action),
   });
 
   const queue = (acts: Action[] | void, t: number) => {
@@ -386,7 +389,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     }
   }
 
-  const endEquity = cash + markValue();
+  // 期末に残った BTC は売ったものとして Taker 手数料を引く。引かないと買って持つだけの戦略が出口の手数料を払わずに済む
+  const endEquity = cash + markValue() * (1 - TAKER_FEE);
   const pnl = endEquity - capital;
   return {
     startEquity: capital,

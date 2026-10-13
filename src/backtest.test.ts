@@ -91,7 +91,8 @@ test("trades model: a market buy fills at the next trade price plus slippage and
   expect(fills[0]!.feeJpy).toBeCloseTo(0.6006, 9);
   expect(result.endCash).toBeCloseTo(10_000 - 1201.2 - 0.6006, 9);
   expect(result.endPosition).toBeCloseTo(0.001, 12);
-  expect(result.endEquity).toBeCloseTo(10_000 - 1201.2 - 0.6006 + 1200, 9);
+  // 期末に残った 0.001 BTC は 1,200,000 で売ったものとして Taker 手数料 0.6 を引く
+  expect(result.endEquity).toBeCloseTo(10_000 - 1201.2 - 0.6006 + 1200 - 0.6, 9);
   expect(result.takerFills).toBe(1);
   expect(result.makerFills).toBe(0);
   expect(result.volumeJpy).toBeCloseTo(1201.2, 9);
@@ -429,9 +430,9 @@ test("max drawdown is measured from the running peak of the marked-to-market equ
   );
   expect(result.startEquity).toBe(10_000);
   expect(result.maxDrawdownPct).toBeCloseTo(10.025, 9);
-  expect(result.endEquity).toBeCloseTo(4997.5 + 5500, 9);
-  expect(result.pnl).toBeCloseTo(497.5, 9);
-  expect(result.returnPct).toBeCloseTo(4.975, 9);
+  expect(result.endEquity).toBeCloseTo(4997.5 + 5500 - 2.75, 9);
+  expect(result.pnl).toBeCloseTo(494.75, 9);
+  expect(result.returnPct).toBeCloseTo(4.9475, 9);
 });
 
 test("the result counts events and gives the first and last event times", async () => {
@@ -473,5 +474,33 @@ test("book model: a position bought before any trade is valued at the best bid",
     "book",
   );
   expect(fills).toHaveLength(1);
-  expect(result.endEquity).toBeCloseTo(10_000 - 5000 - 2.5 + 4000, 9);
+  expect(result.endEquity).toBeCloseTo(10_000 - 5000 - 2.5 + 4000 - 2, 9);
+});
+
+test("max drawdown follows a peak above the starting capital", async () => {
+  const { result } = await run(
+    [
+      tr(1, "BUY", 5_000_000, 1),
+      tr(2, "BUY", 5_000_000, 1),
+      tr(3, "BUY", 7_000_000, 1),
+      tr(4, "SELL", 6_000_000, 1),
+    ],
+    { 1: [{ type: "market", side: "BUY", size: 0.001 }] },
+    "trades",
+  );
+  // 7,000,000 で 11,997.5 の山、6,000,000 で 10,997.5 に下がる
+  expect(result.maxDrawdownPct).toBeCloseTo((1000 / 11_997.5) * 100, 9);
+});
+
+test("ctx.pending shows orders that have not taken effect yet", async () => {
+  const { seen } = await run(
+    [tr(1, "BUY", 1_000_000, 1), tr(100, "BUY", 1_000_000, 1), tr(600, "BUY", 1_000_000, 1)],
+    { 1: [{ type: "market", side: "BUY", size: 0.001, id: "m" }] },
+    "trades",
+    { latencyMs: 500 },
+  );
+  expect(seen.find((s) => s.t === 100)!.ctx.pending).toEqual([
+    { type: "market", side: "BUY", size: 0.001, id: "m" },
+  ]);
+  expect(seen.find((s) => s.t === 600)!.ctx.pending).toEqual([]);
 });

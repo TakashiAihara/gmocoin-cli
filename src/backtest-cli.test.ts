@@ -119,12 +119,13 @@ test("backtest splits train and test, runs a fresh strategy in each, and fails t
   expect(train.from).toBe("2026-10-12T00:00:00.000Z");
   expect(train.to).toBe("2026-10-12T12:00:00.000Z");
   expect(train.fills).toBe(1);
-  expect(train.pnl).toBeCloseTo(-0.5, 9);
+  // 期末に残った 0.0001 BTC は Taker 手数料を引いて評価する (10,000,000 で 0.5、9,000,000 で 0.45)
+  expect(train.pnl).toBeCloseTo(-1, 9);
   expect(testPeriod.from).toBe("2026-10-12T12:00:00.000Z");
   expect(testPeriod.to).toBe("2026-10-13T00:00:00.000Z");
   expect(testPeriod.fills).toBe(1);
   expect(testPeriod.events).toBe(4);
-  expect(testPeriod.pnl).toBeCloseTo(-200.55, 9);
+  expect(testPeriod.pnl).toBeCloseTo(-201, 9);
   // 15:00 の 10,099.45 から 22:00 の 9,799.45 への下落
   expect(testPeriod.maxDrawdownPct).toBeCloseTo((300 / 10_099.45) * 100, 9);
   expect(out.pass).toBe(false);
@@ -149,7 +150,7 @@ test("backtest passes a single period with a profit and a drawdown within 20%", 
   const out = JSON.parse(r.stdout);
   expect(out.periods.map((p: { name: string }) => p.name)).toEqual(["all"]);
   expect(out.periods[0].startEquity).toBe(10_000);
-  expect(out.periods[0].pnl).toBeCloseTo(99.45, 9);
+  expect(out.periods[0].pnl).toBeCloseTo(98.85, 9);
   expect(out.pass).toBe(true);
 });
 
@@ -176,7 +177,7 @@ test("backtest uses --capital and --slippage-bps", async () => {
   const p = JSON.parse(r.stdout).periods[0];
   expect(p.startEquity).toBe(50_000);
   // 11,000,000 × 1.01 で 0.0001 BTC を買い、12,000,000 で評価する
-  expect(p.pnl).toBeCloseTo(1200 - 1111 - 1111 * 0.0005, 9);
+  expect(p.pnl).toBeCloseTo(1200 - 1111 - 1111 * 0.0005 - 0.6, 9);
 });
 
 test("backtest exits 1 naming the day when a CSV is not published", async () => {
@@ -215,15 +216,19 @@ test("backtest exits 1 when a period has no trades instead of reporting a zero r
 });
 
 test("backtest rejects a split outside the range and a range that ends before it starts", async () => {
-  const { strategy, data } = setup({});
-  const bad = [
-    ["--from", "2026-10-12", "--to", "2026-10-13", "--split", "2026-10-14"],
-    ["--from", "2026-10-13", "--to", "2026-10-12"],
-    ["--from", "yesterday", "--to", "2026-10-12"],
+  const { strategy, data, url } = setup(BOTH_DAYS);
+  const bad: [string[], string][] = [
+    [["--from", "2026-10-12", "--to", "2026-10-13", "--split", "2026-10-14"], "--split"],
+    [["--from", "2026-10-12", "--to", "2026-10-13", "--split", "2026-10-12"], "--split"],
+    [["--from", "2026-10-13", "--to", "2026-10-12"], "--to must be after"],
+    [["--from", "2026-10-12", "--to", "2026-10-12"], "--to must be after"],
+    [["--from", "yesterday", "--to", "2026-10-12"], "YYYY-MM-DD"],
+    [["--from", "2026-10-12", "--to", "2026-10-13", "--symbol", "ETH"], "BTC"],
   ];
-  for (const args of bad) {
-    const r = await backtest(["--strategy", strategy, "--data", data, ...args]);
+  for (const [args, message] of bad) {
+    const r = await backtest(["--strategy", strategy, "--data", data, ...args], url);
     expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain(message);
     expect(r.stdout).toBe("");
   }
 });
@@ -288,4 +293,97 @@ test("backtest with --source record fills a market order against the recorded bo
   expect(p.takerFills).toBe(1);
   // 0.00004 @ 5,000,000 + 0.00006 @ 5,001,000
   expect(p.volumeJpy).toBeCloseTo(200 + 300.06, 9);
+});
+
+test("backtest reports a period where the strategy never trades instead of failing", async () => {
+  const { data, url } = setup(BOTH_DAYS);
+  const idle = join(dir!.path, "idle.ts");
+  writeFileSync(idle, "export default function () { return {}; }\n");
+  const r = await backtest(
+    [
+      "--strategy",
+      idle,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12T12:00:00Z",
+      "--to",
+      "2026-10-12T20:00:00Z",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  const out = JSON.parse(r.stdout);
+  expect(out.periods[0].fills).toBe(0);
+  expect(out.periods[0].events).toBe(3);
+  expect(out.pass).toBe(false);
+});
+
+test("backtest judges the test period, not the train period", async () => {
+  const { strategy, data, url } = setup(BOTH_DAYS);
+  const r = await backtest(
+    [
+      "--strategy",
+      strategy,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12",
+      "--to",
+      "2026-10-12T20:00:00Z",
+      "--split",
+      "2026-10-12T12:00:00Z",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  const out = JSON.parse(r.stdout);
+  expect(out.periods[0].pnl).toBeLessThan(0);
+  expect(out.periods[1].pnl).toBeGreaterThan(0);
+  expect(out.pass).toBe(true);
+});
+
+// 10,000,000 で 0.0001 BTC を買い (1,000 + 手数料 0.5)、drop まで下げてから 12,000,000 に戻す
+function drawdownCsv(drop: number) {
+  return {
+    "/data/trades/BTC/2026/10/20261012_BTC.csv.gz": [
+      "symbol,side,size,price,timestamp",
+      "BTC,BUY,0.0010,10000000.000,2026-10-12 01:00:00.000",
+      "BTC,BUY,0.0010,10000000.000,2026-10-12 02:00:00.000",
+      `BTC,SELL,0.0010,${drop}.000,2026-10-12 03:00:00.000`,
+      "BTC,BUY,0.0010,12000000.000,2026-10-12 04:00:00.000",
+      "",
+    ].join("\n"),
+  };
+}
+
+test("backtest fails a profitable period whose drawdown is over 20% and passes one within it", async () => {
+  // 資金 1,250.5 の山から、7,500,000 では 1,000 (20.03% 下落)、7,600,000 では 1,010 (19.23% 下落)
+  for (const [drop, pass] of [
+    [7_500_000, false],
+    [7_600_000, true],
+  ] as const) {
+    const { strategy, data, url } = setup(drawdownCsv(drop));
+    const r = await backtest(
+      [
+        "--strategy",
+        strategy,
+        "--data",
+        data,
+        "--from",
+        "2026-10-12",
+        "--to",
+        "2026-10-12T20:00:00Z",
+        "--capital",
+        "1250.5",
+      ],
+      url,
+    );
+    expect(r.code).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.periods[0].pnl).toBeGreaterThan(0);
+    expect(out.pass).toBe(pass);
+    server?.stop(true);
+    dir?.cleanup();
+  }
 });

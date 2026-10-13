@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import { runBacktest, type StrategyFactory } from "./backtest.ts";
@@ -57,6 +58,12 @@ function parseNumber(v: string): number {
   return n;
 }
 
+// 手数料・数量の刻み・値段の刻みは BTC 現物の値で固定している
+function parseBacktestSymbol(v: string): string {
+  if (v !== "BTC") throw new InvalidArgumentError("backtest supports BTC (spot) only");
+  return v;
+}
+
 async function loadStrategy(path: string): Promise<StrategyFactory> {
   const mod = (await import(pathToFileURL(resolve(path)).href)) as { default?: unknown };
   if (typeof mod.default !== "function") {
@@ -68,7 +75,10 @@ async function loadStrategy(path: string): Promise<StrategyFactory> {
 async function csvPaths(opts: { data: string; symbol: string; from: number; to: number }) {
   const baseUrl = process.env.GMOCOIN_TRADES_CSV_URL || DEFAULT_TRADES_CSV_URL;
   const paths: string[] = [];
-  for (const date of csvFileDates(opts.from, opts.to)) {
+  const dates = csvFileDates(opts.from, opts.to);
+  for (const [i, date] of dates.entries()) {
+    const cached = existsSync(join(opts.data, "csv", opts.symbol, `${date}_${opts.symbol}.csv.gz`));
+    if (!cached) console.error(`fetching CSV ${date} (${i + 1}/${dates.length})`);
     paths.push(await ensureCsv({ dataDir: opts.data, symbol: opts.symbol, date, baseUrl }));
   }
   return paths;
@@ -128,7 +138,7 @@ async function backtestReport(opts: BacktestOpts) {
       latencyMs: opts.latencyMs,
       slippageBps: opts.slippageBps,
     });
-    if (result.fills === 0) throw new Error(`period "${period.name}" has no fills`);
+    if (result.events === 0) throw new Error(`period "${period.name}" has no market data`);
     results.push({
       name: period.name,
       from: new Date(period.from).toISOString(),
@@ -201,7 +211,7 @@ program
   .option("--split <time>", "train [from, split) and test [split, to)", parseTime)
   .option("--source <source>", "csv or record", parseSource, "csv")
   .option("--data <dir>", "data directory (csv cache or record files)", "./data")
-  .option("--symbol <symbol>", "symbol to replay", parseSymbol, "BTC")
+  .option("--symbol <symbol>", "symbol to replay (BTC only)", parseBacktestSymbol, "BTC")
   .option("--capital <jpy>", "starting cash in JPY", parseNumber, 10000)
   .option("--latency-ms <ms>", "order latency in milliseconds", parseNumber, 0)
   .option("--slippage-bps <bps>", "slippage for market orders, csv source only", parseNumber, 0)
