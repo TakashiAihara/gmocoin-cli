@@ -41,6 +41,8 @@ RestartSec=10
 
 Replays trades through a strategy and prints a JSON result. The strategy is a file whose default export is a factory returning `{ onTrade?, onBook?, onFill?, onReject? }`; see `strategies/sma-cross.ts` for the file format (it only shows the shape: as a taker on every cross it loses most of its capital to fees) and `docs/design/backtest.md` for the contract.
 
+`strategies/trend-ensemble.ts` is the first strategy that passes the test period (2025-01-01 to 2026-10-12); `docs/strategies.md` has the results and the strategies that failed.
+
 Split a long range into a train period and a test period. The test period decides `pass` (PnL above zero and max drawdown at most 20%):
 
 ```sh
