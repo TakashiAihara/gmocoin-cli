@@ -78,7 +78,7 @@ export type BacktestResult = {
   rejects: number;
   feesJpy: number;
   volumeJpy: number;
-  // 成行の約定価格が、注文を決めた時点の直前の約定価格からどれだけ不利だったか (約定代金の加重平均)。成行が無ければ null
+  // 成行の約定価格が、注文を決めた時点の直前の約定価格からどれだけ不利だったか (判断時点の価格 × 数量で加重平均)。成行が無ければ null
   takerSlippageBps: number | null;
   events: number;
   firstEventAt: string | undefined;

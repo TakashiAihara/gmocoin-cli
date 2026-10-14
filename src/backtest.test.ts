@@ -649,7 +649,7 @@ test("book model: taker slippage is measured against the trade price the order w
   const { fills, result } = await run(
     [book(0), tr(1, "BUY", 10_000_000, 1), book(2), tr(3, "SELL", 10_000_000, 1), book(4)],
     {
-      1: [{ type: "market", side: "BUY", size: 0.0001 }],
+      1: [{ type: "market", side: "BUY", size: 0.0003 }],
       3: [{ type: "market", side: "SELL", size: 0.0001 }],
     },
     "book",
@@ -658,6 +658,6 @@ test("book model: taker slippage is measured against the trade price the order w
     ["BUY", 10_100_000],
     ["SELL", 9_950_000],
   ]);
-  // 買いは 100bps、売りは 50bps 不利。同じ代金なので平均 75bps
-  expect(result.takerSlippageBps).toBeCloseTo(75, 9);
+  // 買いは 100bps、売りは 50bps 不利。代金が 3:1 なので (100×3 + 50×1) / 4 = 87.5bps (単純平均なら 75)
+  expect(result.takerSlippageBps).toBeCloseTo(87.5, 9);
 });

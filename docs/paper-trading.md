@@ -41,7 +41,8 @@ bun src/cli.ts backtest --strategy strategies/slippage-probe.ts --data "$DATA" -
 - `DATA` は `gmocoin record --out` に渡したディレクトリ (値は例)。`FROM` は記録が丸 1 日そろっている最初の日 (UTC)。`TO` は最後の約定 CSV が公開済みの日まで (CSV は温めと csv 側で使う)
 - 温めは 60 日。trend-ensemble は 56 日の SMA を使い、20 日のボラティリティはその内側に収まるので、56 日に数日の余裕を足した
 - 見る値は `pnl` / `maxDrawdownPct` / `fills` と `takerSlippageBps`。バックテストは滑り 5bps を置いており、20bps で利益が消える (`docs/strategies.md`)
-- 滑りの量はプローブの `PROBE_SIZE` (既定 0.0003 BTC) に依存する。戦略の注文の大きさに合わせる
+- 滑りの量はプローブの `PROBE_SIZE` (既定 0.0003 BTC) に依存する。戦略の注文の大きさに合わせる。プローブは毎時往復して手数料とスプレッドで現金を減らすので、2 週間 (約 340 回) 回すなら `--capital` を注文額の数倍に取る
+- 約定 CSV は 2021-01-01 からしか無いので、温めの開始がそれより前になる期間は CSV が取れずに exit 1 で止まる
 - 記録の欠けはファイルの時間範囲で数える (`docs/design/record.md`)。欠けた間は直前の板のまま進むので、欠けが長い期間は評価に使わない
 - 記録のディレクトリを実行ユーザー以外 (root 等) で回すと、CSV のキャッシュがそのユーザーの所有で残る。記録と同じユーザーで回す
 

@@ -47,3 +47,26 @@ test("刻みに合わない PROBE_SIZE は読み込みの時点で止める", as
   expect(await p.exited).not.toBe(0);
   expect(await new Response(p.stderr).text()).toContain("PROBE_SIZE must be");
 });
+
+test("板が届く前の約定で拒否されたら、同じ時間の次の約定で出し直す", async () => {
+  const book = {
+    kind: "book" as const,
+    t: 2,
+    asks: [{ price: 10_010_000, size: 1 }],
+    bids: [{ price: 9_995_000, size: 1 }],
+  };
+  const events: MarketEvent[] = [
+    { kind: "trade", t: 1, side: "BUY", price: 10_000_000, size: 0.01 },
+    book,
+    { kind: "trade", t: 3, side: "BUY", price: 10_000_000, size: 0.01 },
+    { ...book, t: 4 },
+  ];
+  const r = await runBacktest({
+    events,
+    strategy: slippageProbe(),
+    fillModel: "book",
+    capital: 10_000,
+  });
+  expect(r.rejects).toBe(1);
+  expect(r.takerFills).toBe(1);
+});

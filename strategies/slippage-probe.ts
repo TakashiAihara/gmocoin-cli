@@ -23,5 +23,9 @@ export default function slippageProbe(): Strategy {
       const side = ctx.position >= SIZE - 1e-9 ? "SELL" : "BUY";
       return [{ type: "market", side, size: SIZE }];
     },
+    onReject() {
+      // 拒否された (板がまだ無い等) 時間は、次の約定で出し直す
+      bar = undefined;
+    },
   };
 }
