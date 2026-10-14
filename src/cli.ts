@@ -131,8 +131,8 @@ async function backtestReport(opts: BacktestOpts) {
     const names = new Set(csvFileDates(from, to).map((d) => `${d}_${opts.symbol}.csv.gz`));
     const found = paths.filter((p) => names.has(basename(p)));
     // 取った日と読む日がずれたら、データが黙って短くなる前に止める
-    if (found.length !== names.size)
-      throw new Error(`CSV for ${[...names].join(", ")} was not fetched`);
+    const missing = [...names].filter((n) => !found.some((p) => basename(p) === n));
+    if (missing.length > 0) throw new Error(`CSV ${missing.join(", ")} was not fetched`);
     return csvEvents({ paths: found, from, to });
   };
 

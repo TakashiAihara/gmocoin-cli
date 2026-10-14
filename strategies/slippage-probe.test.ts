@@ -70,3 +70,24 @@ test("板が届く前の約定で拒否されたら、同じ時間の次の約�
   expect(r.rejects).toBe(1);
   expect(r.takerFills).toBe(1);
 });
+
+test("現金不足で拒否されたら同じ時間には出し直さない", async () => {
+  const events: MarketEvent[] = [
+    {
+      kind: "book",
+      t: 0,
+      asks: [{ price: 10_010_000, size: 1 }],
+      bids: [{ price: 9_995_000, size: 1 }],
+    },
+  ];
+  for (let i = 1; i <= 20; i++)
+    events.push({ kind: "trade", t: i, side: "BUY", price: 10_000_000, size: 0.01 });
+  const r = await runBacktest({
+    events,
+    strategy: slippageProbe(),
+    fillModel: "book",
+    capital: 1_000,
+  });
+  expect(r.rejects).toBe(1);
+  expect(r.fills).toBe(0);
+});
