@@ -35,7 +35,7 @@ WantedBy=multi-user.target
 DATA=/srv/gmocoin/data FROM=2026-10-15 TO=2026-10-29
 bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data "$DATA" --from "$FROM" --to "$TO" --warmup-days 60 --source record
 bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data "$DATA" --from "$FROM" --to "$TO" --warmup-days 60 --source csv --slippage-bps 5
-bun src/cli.ts backtest --strategy strategies/slippage-probe.ts --data "$DATA" --from "$FROM" --to "$TO" --source record
+bun src/cli.ts backtest --strategy strategies/slippage-probe.ts --data "$DATA" --from "$FROM" --to "$TO" --source record --capital 50000
 ```
 
 - `DATA` は `gmocoin record --out` に渡したディレクトリ (値は例)。`FROM` は記録が丸 1 日そろっている最初の日 (UTC)。`TO` は最後の約定 CSV が公開済みの日まで (CSV は温めと csv 側で使う)
