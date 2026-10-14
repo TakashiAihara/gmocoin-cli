@@ -46,7 +46,8 @@ def simulate(c, a, b, lbs, tv, band, vol_n=480):
             g = c[i] / c[i - 1] - 1
             eq *= 1 + w * g
             w = w * (1 + g) / (1 + w * g)
-        peak, dd = max(peak, eq), max(dd, 1 - eq / max(peak, eq))
+        peak = max(peak, eq)
+        dd = max(dd, 1 - eq / peak)
         k = i - a + 1
         use = [m for m in lbs if k >= m]
         if not use or k <= vol_n:
@@ -58,6 +59,7 @@ def simulate(c, a, b, lbs, tv, band, vol_n=480):
         if abs(t - w) >= band or (t == 0 and w > 0):
             eq -= abs(t - w) * eq * COST
             w, n = t, n + 1
+            dd = max(dd, 1 - eq / peak)
     return eq - 1, dd, n
 
 

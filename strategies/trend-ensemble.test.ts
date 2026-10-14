@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { runBacktest, type MarketEvent } from "../src/backtest.ts";
+import { runBacktest, type MarketEvent, type Strategy } from "../src/backtest.ts";
 import trendEnsemble from "./trend-ensemble.ts";
 
 const HOUR = 3_600_000;
@@ -26,18 +26,32 @@ test("上げ相場では BTC を持ち、下げに転じると手放す", async 
 
   const reversed = await run(market(40, 30));
   // 全量を売っても浮動小数の端数 (1e-20 程度) が残る
-  expect(reversed.endPosition).toBeLessThan(1e-8);
+  expect(reversed.endPosition).toBeCloseTo(0, 8);
 });
 
 test("持つ比率はボラティリティの目標で決まり、差が小さければ持ち替えない", async () => {
   const r = await run(market(40, 0));
-  // 比率は 0.15 / 年率ボラティリティ (この相場で約 0.4) で頭打ちになり、2 回買った後は差が幅 0.15 に届かない
+  // 比率 0.15 / 年率ボラティリティで 1 回買い、値上がりで比率が幅 0.15 を超えて膨らんだぶんを 1 回売る
   expect(r.fills).toBe(2);
   expect(r.endCash).toBeCloseTo(8428.38, 1);
 });
 
 test("約定の無い時間も経過時間として数える", async () => {
-  // 2 時間に 1 約定。空いた足を数えなければ 20 日ぶんの足が貯まらず、30 日では一度も買わない
-  const r = await run(market(30, 0, 2));
-  expect(r.endPosition).toBeGreaterThan(0);
+  // 2 時間に 1 約定。空いた足も数えるので、20 日 (480 本) が経った直後の約定 (482 時間目) で初めて発注する
+  const strategy = trendEnsemble();
+  let firstOrderHour: number | undefined;
+  const watched: Strategy = {
+    onTrade(trade, ctx) {
+      const actions = strategy.onTrade!(trade, ctx);
+      if (actions && firstOrderHour === undefined) firstOrderHour = trade.t / HOUR;
+      return actions;
+    },
+  };
+  await runBacktest({
+    events: market(30, 0, 2),
+    strategy: watched,
+    fillModel: "trades",
+    capital: 10_000,
+  });
+  expect(firstOrderHour).toBe(482);
 });

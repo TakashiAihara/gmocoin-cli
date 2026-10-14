@@ -6,7 +6,7 @@ const BARS_PER_DAY = 24;
 // 複数の期間の SMA を多数決にして、期間の選び方への依存を減らす。足りない期間は履歴が貯まるまで数えない
 const LOOKBACKS = [7, 14, 28, 56].map((d) => d * BARS_PER_DAY);
 const VOL_BARS = 20 * BARS_PER_DAY;
-// 年率換算のボラティリティの目標。BTC の年率 50〜80% に対して小さく取り、ドローダウンを 20% 以内に収める
+// 年率換算のボラティリティの目標。BTC の年率 (2025〜26 の 1 時間足で 42〜46%) より小さく取り、ドローダウンを 20% 以内に収める
 const TARGET_VOL = 0.15;
 // 目標と現在の比率の差がこれ未満なら持ち替えない (手数料で削られないように)
 const REBALANCE_BAND = 0.15;
@@ -36,7 +36,7 @@ export default function trendEnsemble(): Strategy {
         last = trade.price;
         return;
       }
-      // 約定の無い足 (GMO の週次メンテで最大 7 時間) は直前の終値で埋め、期間を経過時間どおりに保つ
+      // 約定の無い足 (2021〜2026 に 1〜7 時間の欠けが 289 か所) は直前の終値で埋め、期間を経過時間どおりに保つ
       for (let i = Math.max(bar, b - LOOKBACKS.at(-1)!); i < b; i++) closes.push(last);
       bar = b;
       last = trade.price;
@@ -60,9 +60,9 @@ export default function trendEnsemble(): Strategy {
       if (diff >= SIZE_STEP)
         return [{ type: "market", side: "BUY", size: Number(diff.toFixed(5)) }];
       if (diff <= -SIZE_STEP) {
-        return [
-          { type: "market", side: "SELL", size: Number(Math.min(-diff, ctx.position).toFixed(5)) },
-        ];
+        // 保有量の浮動小数の端数 (0.0000199999… など) を toFixed で切り上げて保有量を超えないよう、刻みで切り下げる
+        const held = Math.floor(ctx.position / SIZE_STEP + 1e-6) * SIZE_STEP;
+        return [{ type: "market", side: "SELL", size: Number(Math.min(-diff, held).toFixed(5)) }];
       }
     },
   };
