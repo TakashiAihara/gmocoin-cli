@@ -72,10 +72,11 @@ async function loadStrategy(path: string): Promise<StrategyFactory> {
   return mod.default as StrategyFactory;
 }
 
-async function csvPaths(opts: { data: string; symbol: string; from: number; to: number }) {
+// ranges は [from, to) の並び。重なる日は 1 度だけ取る
+async function csvPaths(opts: { data: string; symbol: string; ranges: [number, number][] }) {
   const baseUrl = process.env.GMOCOIN_TRADES_CSV_URL || DEFAULT_TRADES_CSV_URL;
   const paths: string[] = [];
-  const dates = csvFileDates(opts.from, opts.to);
+  const dates = [...new Set(opts.ranges.flatMap(([from, to]) => csvFileDates(from, to)))].sort();
   for (const [i, date] of dates.entries()) {
     const cached = existsSync(join(opts.data, "csv", opts.symbol, `${date}_${opts.symbol}.csv.gz`));
     if (!cached) console.error(`fetching CSV ${date} (${i + 1}/${dates.length})`);
@@ -95,7 +96,10 @@ type BacktestOpts = {
   capital: number;
   latencyMs: number;
   slippageBps: number;
+  warmupDays: number;
 };
+
+const DAY_MS = 86_400_000;
 
 async function backtestReport(opts: BacktestOpts) {
   if (opts.from >= opts.to) throw new Error("--to must be after --from");
@@ -105,6 +109,8 @@ async function backtestReport(opts: BacktestOpts) {
   if (opts.capital <= 0) throw new Error("--capital must be positive");
   if (opts.latencyMs < 0) throw new Error("--latency-ms must not be negative");
   if (opts.slippageBps < 0) throw new Error("--slippage-bps must not be negative");
+  if (opts.warmupDays < 0) throw new Error("--warmup-days must not be negative");
+  const warmupMs = opts.warmupDays * DAY_MS;
 
   const periods =
     opts.split === undefined
@@ -114,24 +120,27 @@ async function backtestReport(opts: BacktestOpts) {
           { name: "test", from: opts.split, to: opts.to },
         ];
   const factory = await loadStrategy(opts.strategy);
-  const paths =
-    opts.source === "csv"
-      ? await csvPaths({ data: opts.data, symbol: opts.symbol, from: opts.from, to: opts.to })
-      : [];
+  // 戦略の温めは record にも過去分が無いので、どちらの source でも約定 CSV から流す
+  const ranges = periods.flatMap((p): [number, number][] => [
+    ...(warmupMs > 0 ? [[p.from - warmupMs, p.from] as [number, number]] : []),
+    ...(opts.source === "csv" ? [[p.from, p.to] as [number, number]] : []),
+  ]);
+  const paths = await csvPaths({ data: opts.data, symbol: opts.symbol, ranges });
+  // 取得は全期間で 1 回にし、読むのは範囲を覆うファイルだけにする
+  const csvRange = (from: number, to: number) => {
+    const names = new Set(csvFileDates(from, to).map((d) => `${d}_${opts.symbol}.csv.gz`));
+    const found = paths.filter((p) => names.has(basename(p)));
+    // 取った日と読む日がずれたら、データが黙って短くなる前に止める
+    const missing = [...names].filter((n) => !found.some((p) => basename(p) === n));
+    if (missing.length > 0) throw new Error(`CSV ${missing.join(", ")} was not fetched`);
+    return csvEvents({ paths: found, from, to });
+  };
 
   const results = [];
   for (const period of periods) {
-    // 取得は全期間で 1 回にし、読むのはその期間を覆うファイルだけにする
-    const names = new Set(
-      csvFileDates(period.from, period.to).map((d) => `${d}_${opts.symbol}.csv.gz`),
-    );
     const events =
       opts.source === "csv"
-        ? csvEvents({
-            paths: paths.filter((p) => names.has(basename(p))),
-            from: period.from,
-            to: period.to,
-          })
+        ? csvRange(period.from, period.to)
         : recordEvents({
             dataDir: opts.data,
             symbol: opts.symbol,
@@ -145,6 +154,7 @@ async function backtestReport(opts: BacktestOpts) {
       capital: opts.capital,
       latencyMs: opts.latencyMs,
       slippageBps: opts.slippageBps,
+      warmup: warmupMs > 0 ? csvRange(period.from - warmupMs, period.from) : undefined,
     });
     if (result.events === 0) throw new Error(`period "${period.name}" has no market data`);
     results.push({
@@ -223,6 +233,12 @@ program
   .option("--capital <jpy>", "starting cash in JPY", parseNumber, 10000)
   .option("--latency-ms <ms>", "order latency in milliseconds", parseNumber, 0)
   .option("--slippage-bps <bps>", "slippage for market orders, csv source only", parseNumber, 0)
+  .option(
+    "--warmup-days <days>",
+    "feed the strategy CSV trades for this many days before each period, without trading",
+    parseNumber,
+    0,
+  )
   .action(async (opts: BacktestOpts) => {
     try {
       console.log(JSON.stringify(await backtestReport(opts), null, 2));

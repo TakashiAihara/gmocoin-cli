@@ -62,6 +62,8 @@ export type BacktestOptions = {
   capital: number;
   latencyMs?: number;
   slippageBps?: number;
+  // 期間の前の市場データ。戦略に流して履歴を貯めさせるだけで、返したアクションは捨てる
+  warmup?: AsyncIterable<MarketEvent> | Iterable<MarketEvent>;
 };
 
 export type BacktestResult = {
@@ -76,6 +78,8 @@ export type BacktestResult = {
   rejects: number;
   feesJpy: number;
   volumeJpy: number;
+  // 成行の約定価格が、注文を決めた時点の直前の約定価格からどれだけ不利だったか (判断時点の価格 × 数量で加重平均)。成行が無ければ null
+  takerSlippageBps: number | null;
   events: number;
   firstEventAt: string | undefined;
   lastEventAt: string | undefined;
@@ -99,9 +103,10 @@ type Resting = {
   queueAhead: number;
 };
 
-type Pending = { activeAt: number; action: Action };
+// ref は注文を決めた時点の直前の約定価格。成行の滑りの基準にする
+type Pending = { activeAt: number; action: Action; ref: number | undefined };
 
-type Waiting = { id: string; action: OrderAction };
+type Waiting = { id: string; action: OrderAction; ref: number | undefined };
 
 // NOTE: 浮動小数の誤差で整数からずれるので、単位の整数倍かどうかは近さで判定する
 function isStep(x: number, unit: number): boolean {
@@ -163,13 +168,16 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   let firstT = 0;
   let lastT = 0;
   const stats = { fills: 0, makerFills: 0, takerFills: 0, rejects: 0, feesJpy: 0, volumeJpy: 0 };
+  let slipJpy = 0;
+  let slipBaseJpy = 0;
   const pending: Pending[] = [];
   const waiting: Waiting[] = [];
   let resting: Resting[] = [];
   const newFills: Fill[] = [];
   const newRejects: Reject[] = [];
 
-  // 板モードでは最初の約定より前に買えるので、そのときは売れる値段 (最良買い) で評価する
+  // 板モードでは最初の約定より前に買えるので、そのときは売れる値段 (最良買い) で評価する。
+  // ただし温めた場合は温めの最後の約定価格で評価する (期間の最初の約定までの間だけ)
   const markValue = (): number => {
     if (position === 0) return 0;
     const price = lastPrice ?? book?.bids[0]?.price;
@@ -202,8 +210,13 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     price: number,
     size: number,
     liquidity: "maker" | "taker",
+    ref?: number,
   ) => {
     const notional = price * size;
+    if (ref !== undefined) {
+      slipJpy += (side === "BUY" ? price - ref : ref - price) * size;
+      slipBaseJpy += ref * size;
+    }
     const feeJpy = notional * (liquidity === "maker" ? MAKER_FEE : TAKER_FEE);
     cash += (side === "BUY" ? -notional : notional) - feeJpy;
     position += side === "BUY" ? size : -size;
@@ -215,7 +228,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     newFills.push({ id, t, side, price, size, liquidity, feeJpy });
   };
 
-  const execBookMarket = (id: string, action: OrderAction, t: number) => {
+  const execBookMarket = (id: string, action: OrderAction, t: number, ref: number | undefined) => {
     if (!book) {
       reject(id, t, action, "no book yet");
       return;
@@ -231,7 +244,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       reject(id, t, action, why);
       return;
     }
-    fill(id, t, action.side, notional / action.size, action.size, "taker");
+    fill(id, t, action.side, notional / action.size, action.size, "taker", ref);
     // 後から効く成行が食い終わった板をもう一度食わないように減らしておく。次の板が届くまでは
     // ctx.book も指値の前の量の基準もこの減った板になる (板は少なめに見える側)
     const left = consume(levels, action.size);
@@ -239,7 +252,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   };
 
   const execTradeMarket = (w: Waiting, price: number, t: number) => {
-    const { id, action } = w;
+    const { id, action, ref } = w;
     const fillPrice = action.side === "BUY" ? price * (1 + slip) : price * (1 - slip);
     const cost = fillPrice * action.size * (1 + TAKER_FEE);
     const why = shortfall(action.side, action.size, cost);
@@ -247,10 +260,10 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       reject(id, t, action, why);
       return;
     }
-    fill(id, t, action.side, fillPrice, action.size, "taker");
+    fill(id, t, action.side, fillPrice, action.size, "taker", ref);
   };
 
-  const activate = (action: Action, t: number) => {
+  const activate = (action: Action, t: number, ref: number | undefined) => {
     if (action.type === "cancel") {
       const i = resting.findIndex((r) => r.id === action.id);
       if (i < 0) reject(action.id, t, action, "unknown order id");
@@ -263,8 +276,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       return;
     }
     if (action.type === "market") {
-      if (bookModel) execBookMarket(id, action, t);
-      else waiting.push({ id, action });
+      if (bookModel) execBookMarket(id, action, t, ref);
+      else waiting.push({ id, action, ref });
       return;
     }
     if (!(action.price > 0) || !isStep(action.price, TICK_SIZE)) {
@@ -376,13 +389,21 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
 
   const queue = (acts: Action[] | void, t: number) => {
     if (!acts) return;
-    for (const action of acts) pending.push({ activeAt: t + latencyMs, action });
+    for (const action of acts) pending.push({ activeAt: t + latencyMs, action, ref: lastPrice });
   };
 
   const notify = (t: number) => {
     for (const f of newFills.splice(0)) queue(strategy.onFill?.(f, ctx(t)), t);
     for (const r of newRejects.splice(0)) queue(strategy.onReject?.(r, ctx(t)), t);
   };
+
+  // 温めは約定だけを戦略に流す (板は流さない。期間の前の板で判断させない)。直前の約定価格は期間に持ち越す
+  // (期間の最初の板で判断した成行の滑りの基準になる)
+  for await (const e of opts.warmup ?? []) {
+    if (e.kind !== "trade") continue;
+    lastPrice = e.price;
+    strategy.onTrade?.({ t: e.t, side: e.side, price: e.price, size: e.size }, ctx(e.t));
+  }
 
   for await (const e of opts.events) {
     count++;
@@ -393,7 +414,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       const head = pending[0];
       if (!head || head.activeAt > e.t) break;
       pending.shift();
-      activate(head.action, e.t);
+      activate(head.action, e.t, head.ref);
     }
 
     if (e.kind === "trade") {
@@ -426,6 +447,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     rejects: stats.rejects,
     feesJpy: stats.feesJpy,
     volumeJpy: stats.volumeJpy,
+    takerSlippageBps: slipBaseJpy > 0 ? (slipJpy / slipBaseJpy) * 10_000 : null,
     events: count,
     firstEventAt: count === 0 ? undefined : new Date(firstT).toISOString(),
     lastEventAt: count === 0 ? undefined : new Date(lastT).toISOString(),

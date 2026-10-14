@@ -11,7 +11,7 @@
 
 ## 判定
 
-`gmocoin backtest --strategy strategies/trend-ensemble.ts --slippage-bps 5` の結果 (2026-10-14 に実行)。期間は `--from` を含み `--to` を含まない。
+`gmocoin backtest --strategy strategies/trend-ensemble.ts --slippage-bps 5` の結果 (2026-10-14 に実行)。期間は `--from` を含み `--to` を含まない。`--warmup-days` を足す前の結果で、各期間の最初の数十日は少ない履歴で売買している (`--warmup-days 60` で温めると検証期間は +7.78% / DD 12.8% / 208 約定、2026-10-14 に実行)。
 
 | 期間 | 損益 | 最大 DD | 約定 | 手数料 |
 |---|---|---|---|---|

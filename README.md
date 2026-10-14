@@ -57,5 +57,5 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 
 - `--from` is inclusive and `--to` is exclusive. A `YYYY-MM-DD` value means UTC midnight; ISO 8601 with a zone is also accepted.
 - `--source csv` (default) downloads the daily trade CSVs into `<data>/csv/<symbol>/` on first use. Set `GMOCOIN_TRADES_CSV_URL` to point at another mirror.
-- `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0).
+- `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0). `--warmup-days` feeds the strategy this many days of CSV trades before each period without trading (default 0); strategies with long lookbacks such as `strategies/trend-ensemble.ts` need it. Each period also reports `takerSlippageBps`, how much worse market fills were than the trade price the order was decided on.
 - A period with no market data exits 1. Otherwise the exit code is 0 whether or not the strategy passes.
