@@ -55,7 +55,8 @@ def simulate(c, a, b, lbs, tv, band, vol_n=480):
         r = [math.log(c[j] / c[j - 1]) for j in range(i - vol_n + 1, i + 1)]
         m = sum(r) / len(r)
         vol = math.sqrt(sum((x - m) ** 2 for x in r) / len(r) * PER_YEAR)
-        t = sum(c[i] > (s[i + 1] - s[i + 1 - m]) / m for m in use) / len(use) * min(1, tv / vol)
+        # 戦略と同じく、ボラティリティ 0 では上限の 1 を掛ける (TS の tv / 0 は Infinity)
+        t = sum(c[i] > (s[i + 1] - s[i + 1 - m]) / m for m in use) / len(use) * (min(1, tv / vol) if vol > 0 else 1)
         if abs(t - w) >= band or (t == 0 and w > 0):
             eq -= abs(t - w) * eq * COST
             w, n = t, n + 1
