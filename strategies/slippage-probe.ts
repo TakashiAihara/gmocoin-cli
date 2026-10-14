@@ -5,6 +5,13 @@ import type { Strategy } from "../src/backtest.ts";
 const BAR_MS = 3_600_000;
 // 既定は trend-ensemble が資金 1 万円で出す 1 回の注文と同じ桁 (0.0003 BTC ≒ 5,000 円)
 const SIZE = Number(process.env.PROBE_SIZE ?? 0.0003);
+const SIZE_STEP = 0.00001;
+// 刻みに合わない量は全注文が拒否され、takerSlippageBps が null のまま正常終了してしまう
+if (!(SIZE > 0) || Math.abs(SIZE / SIZE_STEP - Math.round(SIZE / SIZE_STEP)) > 1e-6) {
+  throw new Error(
+    `PROBE_SIZE must be a positive multiple of ${SIZE_STEP}: ${process.env.PROBE_SIZE}`,
+  );
+}
 
 export default function slippageProbe(): Strategy {
   let bar: number | undefined;

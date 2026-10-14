@@ -129,7 +129,11 @@ async function backtestReport(opts: BacktestOpts) {
   // 取得は全期間で 1 回にし、読むのは範囲を覆うファイルだけにする
   const csvRange = (from: number, to: number) => {
     const names = new Set(csvFileDates(from, to).map((d) => `${d}_${opts.symbol}.csv.gz`));
-    return csvEvents({ paths: paths.filter((p) => names.has(basename(p))), from, to });
+    const found = paths.filter((p) => names.has(basename(p)));
+    // 取った日と読む日がずれたら、データが黙って短くなる前に止める
+    if (found.length !== names.size)
+      throw new Error(`CSV for ${[...names].join(", ")} was not fetched`);
+    return csvEvents({ paths: found, from, to });
   };
 
   const results = [];

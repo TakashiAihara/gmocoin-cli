@@ -490,3 +490,30 @@ test("--source record with --split and no warmup fetches no CSV", async () => {
   expect(r.code).toBe(0);
   expect(JSON.parse(r.stdout).periods.map((p: { events: number }) => p.events)).toEqual([1, 1]);
 });
+
+test("--warmup-days with --split warms each period from the trades just before it", async () => {
+  const { strategy, data, url } = setup({
+    ...BOTH_DAYS,
+    "/data/trades/BTC/2026/10/20261011_BTC.csv.gz": "symbol,side,size,price,timestamp\n",
+  });
+  const r = await backtest(
+    [
+      "--strategy",
+      strategy,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12",
+      "--to",
+      "2026-10-13",
+      "--split",
+      "2026-10-12T12:00:00Z",
+      "--warmup-days",
+      "1",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  // train の前の 1 日には約定が無いので train は温めても買う。test は train の 01:00 の約定で温まり、買わない
+  expect(JSON.parse(r.stdout).periods.map((p: { fills: number }) => p.fills)).toEqual([1, 0]);
+});

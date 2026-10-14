@@ -176,7 +176,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   const newFills: Fill[] = [];
   const newRejects: Reject[] = [];
 
-  // 板モードでは最初の約定より前に買えるので、そのときは売れる値段 (最良買い) で評価する
+  // 板モードでは最初の約定より前に買えるので、そのときは売れる値段 (最良買い) で評価する。
+  // ただし温めた場合は温めの最後の約定価格で評価する (期間の最初の約定までの間だけ)
   const markValue = (): number => {
     if (position === 0) return 0;
     const price = lastPrice ?? book?.bids[0]?.price;
@@ -396,7 +397,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
     for (const r of newRejects.splice(0)) queue(strategy.onReject?.(r, ctx(t)), t);
   };
 
-  // 温めの入力は約定 CSV なので約定だけを流す。直前の約定価格は期間に持ち越す (期間の最初の板で判断した成行の滑りの基準になる)
+  // 温めは約定だけを戦略に流す (板は流さない。期間の前の板で判断させない)。直前の約定価格は期間に持ち越す
+  // (期間の最初の板で判断した成行の滑りの基準になる)
   for await (const e of opts.warmup ?? []) {
     if (e.kind !== "trade") continue;
     lastPrice = e.price;

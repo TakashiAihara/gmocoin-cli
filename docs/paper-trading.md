@@ -27,17 +27,18 @@ WantedBy=multi-user.target
 ```
 
 - 負荷は RSS 約 40 MB、CPU 1% 未満、板の gzip JSONL は約 20 MB/日 (2026-10-14 に実測)
-- `Restart=always` は落ちたプロセスを上げ直すだけで、繋がったまま書かれない状態には効かない。最新のファイルの更新時刻を見て、新しいときだけ外形監視に生存を送る形にする
+- `Restart=always` は落ちたプロセスを上げ直すだけで、繋がったまま書かれない状態には効かない。`orderbooks` と `trades` のそれぞれで最新のファイルの更新時刻を見て、両方が新しいときだけ外形監視に生存を送る形にする (片方だけ止まっても気づけるように)
 
 ## 評価のしかた
 
 ```bash
-bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data <data> --from <開始日> --to <終了日> --warmup-days 60 --source record
-bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data <data> --from <開始日> --to <終了日> --warmup-days 60 --source csv --slippage-bps 5
-bun src/cli.ts backtest --strategy strategies/slippage-probe.ts --data <data> --from <開始日> --to <終了日> --source record
+DATA=/srv/gmocoin/data FROM=2026-10-15 TO=2026-10-29
+bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data "$DATA" --from "$FROM" --to "$TO" --warmup-days 60 --source record
+bun src/cli.ts backtest --strategy strategies/trend-ensemble.ts --data "$DATA" --from "$FROM" --to "$TO" --warmup-days 60 --source csv --slippage-bps 5
+bun src/cli.ts backtest --strategy strategies/slippage-probe.ts --data "$DATA" --from "$FROM" --to "$TO" --source record
 ```
 
-- `--from` は記録が丸 1 日そろっている最初の日 (UTC)。`--to` は最後の約定 CSV が公開済みの日まで (CSV は温めと csv 側で使う)
+- `DATA` は `gmocoin record --out` に渡したディレクトリ (値は例)。`FROM` は記録が丸 1 日そろっている最初の日 (UTC)。`TO` は最後の約定 CSV が公開済みの日まで (CSV は温めと csv 側で使う)
 - 温めは 60 日。trend-ensemble は 56 日の SMA を使い、20 日のボラティリティはその内側に収まるので、56 日に数日の余裕を足した
 - 見る値は `pnl` / `maxDrawdownPct` / `fills` と `takerSlippageBps`。バックテストは滑り 5bps を置いており、20bps で利益が消える (`docs/strategies.md`)
 - 滑りの量はプローブの `PROBE_SIZE` (既定 0.0003 BTC) に依存する。戦略の注文の大きさに合わせる
