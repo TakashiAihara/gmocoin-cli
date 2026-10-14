@@ -36,10 +36,11 @@ export default function trendEnsemble(): Strategy {
         last = trade.price;
         return;
       }
+      // 約定の無い足 (GMO の週次メンテで最大 7 時間) は直前の終値で埋め、期間を経過時間どおりに保つ
+      for (let i = Math.max(bar, b - LOOKBACKS.at(-1)!); i < b; i++) closes.push(last);
       bar = b;
-      closes.push(last);
       last = trade.price;
-      if (closes.length > LOOKBACKS.at(-1)!) closes.shift();
+      while (closes.length > LOOKBACKS.at(-1)!) closes.shift();
       const usable = LOOKBACKS.filter((n) => closes.length >= n);
       if (usable.length === 0 || closes.length <= VOL_BARS || ctx.pending.length > 0) return;
 
