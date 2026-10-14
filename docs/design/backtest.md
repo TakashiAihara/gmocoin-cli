@@ -25,6 +25,7 @@ gmocoin backtest --strategy strategies/sma-cross.ts --source record --data /srv/
 - `--capital <jpy>` (既定 `10000`)
 - `--latency-ms <ms>` (既定 `0`): 注文と取消が効くまでの遅れ
 - `--slippage-bps <bps>` (既定 `0`): csv の成行の約定価格を不利な側にずらす量。record では使わない (板を食うぶんがスリッページ)
+- `--warmup-days <days>` (既定 `0`): 各期間の前のこの日数分の約定 CSV を戦略に流し、履歴を貯めさせる。その間に戦略が返した注文は捨て (戦略に onFill / onReject は届かない)、評価額・イベント数にも数えない。最後の約定価格だけは期間に持ち越し、期間の最初の `ctx.lastPrice` になる。毎回 `ctx` の現金と保有量から判断し直す戦略向けで、「注文を出した」ことを自分で覚えて 2 度目を出さない戦略 (`strategies/hold.ts`) は温めると期間に 1 度も注文しない。record には過去分が無いので、`--source record` でも温めは約定 CSV から取る。trend-ensemble は 56 日の SMA と 20 日のボラティリティを使うので、温めないと期間の最初の数十日は少ない履歴で売買する
 - CSV の取得元は環境変数 `GMOCOIN_TRADES_CSV_URL` で上書きできる (既定 `https://api.coin.z.com/data/trades`)
 
 ## 入力の形 (2026-10-14 に観測)
@@ -114,7 +115,7 @@ flowchart TD
   "periods": [
     { "name": "train", "from": "...", "to": "...", "startEquity": 10000, "endEquity": 10230.5, "pnl": 230.5,
       "returnPct": 2.305, "maxDrawdownPct": 7.1, "fills": 42, "makerFills": 30, "takerFills": 12,
-      "rejects": 3, "feesJpy": 1.2, "volumeJpy": 380000, "events": 1234567, "firstEventAt": "...", "lastEventAt": "...",
+      "rejects": 3, "feesJpy": 1.2, "volumeJpy": 380000, "takerSlippageBps": 5.4, "events": 1234567, "firstEventAt": "...", "lastEventAt": "...",
       "endPosition": 0.0001, "endCash": 8900 }
   ],
   "pass": true
@@ -124,6 +125,7 @@ flowchart TD
 - 評価額 = 現金 + 保有 BTC × 直前の約定価格 (板モードで約定がまだ無ければ最良買い)。期末の評価額 (`endEquity`) だけは、残った BTC を売ったものとして Taker 手数料を引く (買って持つだけの戦略が出口の手数料を払わずに済まないように)
 - 最大ドローダウンは約定と板のイベントごとの評価額 (評価に板を使うのは、最初の約定より前だけ) で、それまでの最高値 (初期値は資金) からの下落率の最大。計画の「資金の 20% 以内」は、この最高値からの下落率で読む
 - `feesJpy` は払った手数料から受け取った手数料を引いた額 (マイナスなら受け取りが多い)
+- `takerSlippageBps` は成行の約定価格が、注文を決めた時点の直前の約定価格よりどれだけ不利だったか (約定代金で加重平均、bps)。record では板を食った深さとスプレッド、csv では `--slippage-bps` と latency の間の値動きが入る。重みは判断時点の価格 × 数量。判断の前に約定が 1 件も無かった (`--warmup-days` 無しで期間の最初の板で決めた) 成行は数えない。数える成行が 1 度も約定しなければ `null`。板が薄くて拒否された成行は入らない
 - `pass` は検証用の期間 (`--split` が無ければ `all`) で `pnl > 0` かつ `maxDrawdownPct <= 20`。exit code は `pass` に関係なく 0
 - 期間内に市場のイベント (約定・板) が 1 件も無ければ、stderr に出して exit 1 (データが無いのに損益 0 の結果を出さない)。戦略が 1 度も約定しなかっただけなら、`fills: 0` の結果をそのまま出す
 

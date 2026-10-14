@@ -608,3 +608,56 @@ test("book model: a limit is rejected when the opposite side of the book is empt
   expect(fills.map((f) => f.id)).toEqual(["m"]);
   expect(rejects.map((r) => r.id)).toEqual(["l"]);
 });
+
+test("warmup reaches the strategy with the trade price, and its actions are dropped", async () => {
+  const seen: { t: number; lastPrice: number | undefined; cash: number }[] = [];
+  const result = await runBacktest({
+    warmup: [tr(1, "BUY", 9_000_000, 1), tr(2, "SELL", 9_100_000, 1)],
+    events: [
+      bk(5, [[10_000_000, 1]], [[9_990_000, 1]]),
+      tr(10, "BUY", 10_000_000, 1),
+      tr(11, "BUY", 10_000_000, 1),
+    ],
+    strategy: {
+      onTrade(trade, ctx) {
+        seen.push({ t: trade.t, lastPrice: ctx.lastPrice, cash: ctx.cash });
+        if (trade.t < 10) return [{ type: "market", side: "BUY", size: 0.0001 }];
+      },
+      onBook(book, ctx) {
+        seen.push({ t: book.t, lastPrice: ctx.lastPrice, cash: ctx.cash });
+      },
+    },
+    fillModel: "trades",
+    capital: 10_000,
+  });
+  expect(seen).toEqual([
+    { t: 1, lastPrice: 9_000_000, cash: 10_000 },
+    { t: 2, lastPrice: 9_100_000, cash: 10_000 },
+    // 期間の最初の板では、温めの最後の約定価格が直前の約定価格として見える
+    { t: 5, lastPrice: 9_100_000, cash: 10_000 },
+    { t: 10, lastPrice: 10_000_000, cash: 10_000 },
+    { t: 11, lastPrice: 10_000_000, cash: 10_000 },
+  ]);
+  expect(result.fills).toBe(0);
+  expect(result.takerSlippageBps).toBeNull();
+  expect(result.events).toBe(3);
+  expect(result.firstEventAt).toBe(new Date(5).toISOString());
+});
+
+test("book model: taker slippage is measured against the trade price the order was decided on, in both directions", async () => {
+  const book = (t: number) => bk(t, [[10_100_000, 1]], [[9_950_000, 1]]);
+  const { fills, result } = await run(
+    [book(0), tr(1, "BUY", 10_000_000, 1), book(2), tr(3, "SELL", 10_000_000, 1), book(4)],
+    {
+      1: [{ type: "market", side: "BUY", size: 0.0001 }],
+      3: [{ type: "market", side: "SELL", size: 0.0001 }],
+    },
+    "book",
+  );
+  expect(fills.map((f) => [f.side, f.price])).toEqual([
+    ["BUY", 10_100_000],
+    ["SELL", 9_950_000],
+  ]);
+  // 買いは 100bps、売りは 50bps 不利。同じ代金なので平均 75bps
+  expect(result.takerSlippageBps).toBeCloseTo(75, 9);
+});

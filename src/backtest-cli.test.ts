@@ -178,6 +178,8 @@ test("backtest uses --capital and --slippage-bps", async () => {
   expect(p.startEquity).toBe(50_000);
   // 11,000,000 × 1.01 で 0.0001 BTC を買い、12,000,000 で評価する
   expect(p.pnl).toBeCloseTo(1200 - 1111 - 1111 * 0.0005 - 0.6, 9);
+  // 判断した 13:00 の 10,000,000 に対して 14:00 の 11,000,000 × 1.01 で約定した
+  expect(p.takerSlippageBps).toBeCloseTo(1110, 9);
 });
 
 test("backtest exits 1 naming the day when a CSV is not published", async () => {
@@ -293,6 +295,8 @@ test("backtest with --source record fills a market order against the recorded bo
   expect(p.takerFills).toBe(1);
   // 0.00004 @ 5,000,000 + 0.00006 @ 5,001,000
   expect(p.volumeJpy).toBeCloseTo(200 + 300.06, 9);
+  // 判断した時点の約定 5,000,000 に対して 5,000,600 で約定した
+  expect(p.takerSlippageBps).toBeCloseTo(1.2, 9);
 });
 
 test("backtest reports a period where the strategy never trades instead of failing", async () => {
@@ -386,4 +390,103 @@ test("backtest fails a profitable period whose drawdown is over 20% and passes o
     server?.stop(true);
     dir?.cleanup();
   }
+});
+
+test("--warmup-days feeds earlier CSV trades to the strategy without trading on them", async () => {
+  const { strategy, data, url } = setup({
+    ...BOTH_DAYS,
+    "/data/trades/BTC/2026/10/20261011_BTC.csv.gz": "symbol,side,size,price,timestamp\n",
+  });
+  const args = ["--strategy", strategy, "--data", data];
+  const period = ["--from", "2026-10-12T12:00:00Z", "--to", "2026-10-12T20:00:00Z"];
+
+  const cold = JSON.parse((await backtest([...args, ...period], url)).stdout).periods[0];
+  const r = await backtest([...args, ...period, "--warmup-days", "1"], url);
+  expect(r.code).toBe(0);
+  const warm = JSON.parse(r.stdout).periods[0];
+  // BUY_ONCE は最初に見た約定で買う。温めると最初の約定は期間の前 (01:00) になり、その注文は捨てられる
+  expect(cold.fills).toBe(1);
+  expect(warm.fills).toBe(0);
+  expect(warm.takerSlippageBps).toBeNull();
+  expect(warm.events).toBe(3);
+  expect(warm.firstEventAt).toBe("2026-10-12T13:00:00.000Z");
+});
+
+// record の出力を 1 ファイルに書く。msgs は timestamp を持つ受信メッセージ
+function writeRecord(data: string, channel: string, msgs: { timestamp: string }[]) {
+  mkdirSync(join(data, channel, "BTC"), { recursive: true });
+  const lines = msgs.map((msg) => JSON.stringify({ recv_at: msg.timestamp, msg }) + "\n");
+  writeFileSync(
+    join(data, channel, "BTC", "2026-10-13T000000.000Z.jsonl.gz"),
+    gzipSync(lines.join("")),
+  );
+}
+
+const recTrade = (timestamp: string) => ({
+  channel: "trades",
+  price: "5000000",
+  side: "BUY",
+  size: "0.01",
+  symbol: "BTC",
+  timestamp,
+});
+
+const recBook = (timestamp: string) => ({
+  channel: "orderbooks",
+  asks: [{ price: "5001000", size: "1" }],
+  bids: [{ price: "4999000", size: "1" }],
+  symbol: "BTC",
+  timestamp,
+});
+
+test("--warmup-days with --source record reads CSV only before the period", async () => {
+  const { strategy, url } = setup(BOTH_DAYS);
+  const data = join(dir!.path, "rec");
+  writeRecord(data, "orderbooks", [recBook("2026-10-13T00:00:01.000Z")]);
+  writeRecord(data, "trades", [
+    recTrade("2026-10-13T00:00:02.000Z"),
+    recTrade("2026-10-13T00:00:03.000Z"),
+  ]);
+  const args = ["--strategy", strategy, "--source", "record", "--data", data];
+  const period = ["--from", "2026-10-13", "--to", "2026-10-14"];
+
+  const cold = await backtest([...args, ...period]);
+  expect(JSON.parse(cold.stdout).periods[0].fills).toBe(1);
+  // 期間 (10-13) の CSV 20261014 は置いていないので、取りに行けば exit 1 になる
+  const r = await backtest([...args, ...period, "--warmup-days", "1"], url);
+  expect(r.stderr).not.toContain("not available");
+  expect(r.code).toBe(0);
+  const p = JSON.parse(r.stdout).periods[0];
+  expect(p.events).toBe(3);
+  expect(p.fills).toBe(0);
+  expect(p.rejects).toBe(0);
+});
+
+test("--source record with --split and no warmup fetches no CSV", async () => {
+  dir = tempDir();
+  const strategy = join(dir.path, "buy-once.ts");
+  writeFileSync(strategy, BUY_ONCE);
+  const data = join(dir.path, "rec");
+  writeRecord(data, "trades", [
+    recTrade("2026-10-13T00:00:02.000Z"),
+    recTrade("2026-10-13T12:00:00.000Z"),
+  ]);
+  // 取得先は届かない URL (backtest の既定) なので、CSV を 1 本でも取りに行けば exit 1
+  const r = await backtest([
+    "--strategy",
+    strategy,
+    "--source",
+    "record",
+    "--data",
+    data,
+    "--from",
+    "2026-10-13",
+    "--to",
+    "2026-10-14",
+    "--split",
+    "2026-10-13T06:00:00Z",
+  ]);
+  expect(r.stderr).toBe("");
+  expect(r.code).toBe(0);
+  expect(JSON.parse(r.stdout).periods.map((p: { events: number }) => p.events)).toEqual([1, 1]);
 });
