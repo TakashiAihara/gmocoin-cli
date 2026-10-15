@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "description": "CLI for the GMO Coin API (market data recording, backtesting, trading)",
+  "license": "MIT",
   "bin": {
     "gmocoin": "./src/cli.ts"
   },

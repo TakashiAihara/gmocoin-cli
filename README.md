@@ -1,7 +1,15 @@
 # gmocoin-cli
 CLI for the GMO Coin API (market data recording, backtesting, trading)
 
+## Status
+
+- `record` and `backtest` work. Placing orders is not implemented yet, and no command needs an API key.
+- This is an unofficial tool, not affiliated with GMO Coin. Backtest results are not investment advice.
+
 ## Install
+
+Requires [Bun](https://bun.sh) 1.4 or later (`.mise.toml` pins the version used in development).
+
 
 ```bash
 bun install
@@ -59,3 +67,16 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 - `--source csv` (default) downloads the daily trade CSVs into `<data>/csv/<symbol>/` on first use. Set `GMOCOIN_TRADES_CSV_URL` to point at another mirror.
 - `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0). `--warmup-days` feeds the strategy this many days of CSV trades before each period without trading (default 0); strategies with long lookbacks such as `strategies/trend-ensemble.ts` need it. Each period also reports `takerSlippageBps`, how much worse market fills were than the trade price the order was decided on.
 - A period with no market data exits 1. Otherwise the exit code is 0 whether or not the strategy passes.
+
+## Develop
+
+```bash
+bun install
+bun run check   # typecheck, lint, format check and tests
+```
+
+Design specs are in `docs/design/`, strategy results in `docs/strategies.md`, and the paper trading plan in `docs/paper-trading.md`.
+
+## License
+
+[MIT](LICENSE)
