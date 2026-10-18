@@ -62,6 +62,9 @@ export type BacktestOptions = {
   capital: number;
   latencyMs?: number;
   slippageBps?: number;
+  // 既定は GMO コインの現物の手数料
+  makerFeeBps?: number;
+  takerFeeBps?: number;
   // 期間の前の市場データ。戦略に流して履歴を貯めさせるだけで、返したアクションは捨てる
   warmup?: AsyncIterable<MarketEvent> | Iterable<MarketEvent>;
 };
@@ -87,8 +90,8 @@ export type BacktestResult = {
   endCash: number;
 };
 
-export const TAKER_FEE = 0.0005;
-export const MAKER_FEE = -0.0001;
+export const DEFAULT_TAKER_FEE_BPS = 5;
+export const DEFAULT_MAKER_FEE_BPS = -1;
 export const SIZE_STEP = 0.00001;
 export const TICK_SIZE = 1;
 
@@ -153,9 +156,21 @@ function consume(levels: Level[], size: number): Level[] {
 }
 
 export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult> {
-  const { strategy, fillModel, capital, latencyMs = 0, slippageBps = 0 } = opts;
+  const {
+    strategy,
+    fillModel,
+    capital,
+    latencyMs = 0,
+    slippageBps = 0,
+    makerFeeBps = DEFAULT_MAKER_FEE_BPS,
+    takerFeeBps = DEFAULT_TAKER_FEE_BPS,
+  } = opts;
   const bookModel = fillModel === "book";
   const slip = slippageBps / 10_000;
+  const makerFee = makerFeeBps / 10_000;
+  const takerFee = takerFeeBps / 10_000;
+  // 指値の買いは、払う側の Maker 手数料まで現金を押さえる (受け取りなら代金だけ)
+  const limitBuyCost = (price: number, size: number) => price * size * (1 + Math.max(0, makerFee));
 
   let cash = capital;
   let position = 0;
@@ -186,7 +201,10 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   };
 
   const reservedBuy = () =>
-    resting.reduce((s, r) => (r.side === "BUY" ? s + r.price * (r.size - r.filled) : s), 0);
+    resting.reduce(
+      (s, r) => (r.side === "BUY" ? s + limitBuyCost(r.price, r.size - r.filled) : s),
+      0,
+    );
 
   const reservedSell = () =>
     resting.reduce((s, r) => (r.side === "SELL" ? s + (r.size - r.filled) : s), 0);
@@ -217,7 +235,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       slipJpy += (side === "BUY" ? price - ref : ref - price) * size;
       slipBaseJpy += ref * size;
     }
-    const feeJpy = notional * (liquidity === "maker" ? MAKER_FEE : TAKER_FEE);
+    const feeJpy = notional * (liquidity === "maker" ? makerFee : takerFee);
     cash += (side === "BUY" ? -notional : notional) - feeJpy;
     position += side === "BUY" ? size : -size;
     stats.fills++;
@@ -239,7 +257,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       reject(id, t, action, "order is larger than the visible book");
       return;
     }
-    const why = shortfall(action.side, action.size, notional * (1 + TAKER_FEE));
+    const why = shortfall(action.side, action.size, notional * (1 + takerFee));
     if (why) {
       reject(id, t, action, why);
       return;
@@ -254,7 +272,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   const execTradeMarket = (w: Waiting, price: number, t: number) => {
     const { id, action, ref } = w;
     const fillPrice = action.side === "BUY" ? price * (1 + slip) : price * (1 - slip);
-    const cost = fillPrice * action.size * (1 + TAKER_FEE);
+    const cost = fillPrice * action.size * (1 + takerFee);
     const why = shortfall(action.side, action.size, cost);
     if (why) {
       reject(id, t, action, why);
@@ -314,7 +332,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       reject(id, t, action, "post-only order would take liquidity");
       return;
     }
-    const why = shortfall(action.side, action.size, action.price * action.size);
+    const why = shortfall(action.side, action.size, limitBuyCost(action.price, action.size));
     if (why) {
       reject(id, t, action, why);
       return;
@@ -433,7 +451,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   }
 
   // 期末に残った BTC は売ったものとして Taker 手数料を引く。引かないと買って持つだけの戦略が出口の手数料を払わずに済む
-  const endEquity = cash + markValue() * (1 - TAKER_FEE);
+  const endEquity = cash + markValue() * (1 - takerFee);
   const pnl = endEquity - capital;
   return {
     startEquity: capital,

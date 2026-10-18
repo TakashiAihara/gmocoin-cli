@@ -61,7 +61,13 @@ async function run(
   events: MarketEvent[],
   plan: Record<number, Action[]>,
   fillModel: FillModel,
-  opts: { capital?: number; latencyMs?: number; slippageBps?: number } = {},
+  opts: {
+    capital?: number;
+    latencyMs?: number;
+    slippageBps?: number;
+    makerFeeBps?: number;
+    takerFeeBps?: number;
+  } = {},
   onFill?: (f: Fill, ctx: Ctx) => Action[] | void,
 ) {
   const s = scripted(plan, onFill);
@@ -72,6 +78,8 @@ async function run(
     capital: opts.capital ?? 10_000,
     latencyMs: opts.latencyMs,
     slippageBps: opts.slippageBps,
+    makerFeeBps: opts.makerFeeBps,
+    takerFeeBps: opts.takerFeeBps,
   });
   return { ...s, result };
 }
@@ -145,6 +153,78 @@ test("trades model: a limit buy fills only on a trade below its price, at its pr
   expect(result.endCash).toBeCloseTo(10_000 - 1980 + 0.198, 9);
   expect(result.makerFills).toBe(1);
   expect(result.feesJpy).toBeCloseTo(-0.198, 9);
+});
+
+test("trades model: takerFeeBps sets the fee on market fills and on the end-of-period valuation", async () => {
+  const { fills, result } = await run(
+    [tr(1, "BUY", 1_000_000, 0.1), tr(2, "SELL", 1_200_000, 0.1)],
+    { 1: [{ type: "market", side: "BUY", size: 0.001 }] },
+    "trades",
+    { takerFeeBps: 12, makerFeeBps: 3 },
+  );
+  expect(fills[0]!.feeJpy).toBeCloseTo(1.44, 9);
+  expect(result.endEquity).toBeCloseTo(10_000 - 1200 - 1.44 + 1200 - 1.44, 9);
+});
+
+test("trades model: makerFeeBps sets the fee on limit fills", async () => {
+  const { fills } = await run(
+    [tr(1, "BUY", 1_000_000, 1), tr(2, "SELL", 990_000, 5), tr(4, "BUY", 989_999, 0.00001)],
+    { 1: [{ type: "limit", side: "BUY", price: 990_000, size: 0.002 }] },
+    "trades",
+    { takerFeeBps: 12, makerFeeBps: 3 },
+  );
+  expect(fills[0]!.liquidity).toBe("maker");
+  expect(fills[0]!.feeJpy).toBeCloseTo(0.594, 9);
+});
+
+test("trades model: a positive makerFeeBps is held back with a limit buy's cash", async () => {
+  const events = [tr(1, "BUY", 1_000_000, 1), tr(2, "SELL", 980_000, 1)];
+  const plan = {
+    1: [
+      { type: "limit" as const, side: "BUY" as const, price: 990_000, size: 0.0005 },
+      { type: "limit" as const, side: "BUY" as const, price: 990_000, size: 0.0005 },
+    ],
+  };
+  // 代金 495 円 × 2 は資金 1,000 円に収まるが、手数料 2% を足すと 2 本目は 1,009.8 円になる
+  const withFee = await run(events, plan, "trades", { capital: 1_000, makerFeeBps: 200 });
+  expect(withFee.rejects.map((r) => r.reason)).toEqual(["insufficient cash"]);
+  expect(withFee.result.endCash).toBeCloseTo(1_000 - 495 * 1.02, 9);
+  const rebate = await run(events, plan, "trades", { capital: 1_000 });
+  expect(rebate.rejects).toHaveLength(0);
+  expect(rebate.fills).toHaveLength(2);
+});
+
+test("trades model: a maker rebate is not counted toward a limit buy's cash", async () => {
+  // 代金 1,000.05 円は資金 1,000 円を超える。受け取る 0.01% を差し引けば収まるが、受け取りは約定してからなので押さえない
+  const { fills, rejects } = await run(
+    [tr(1, "BUY", 1_010_000, 1), tr(2, "SELL", 1_000_000, 1)],
+    { 1: [{ type: "limit", side: "BUY", price: 1_000_050, size: 0.001 }] },
+    "trades",
+    { capital: 1_000 },
+  );
+  expect(fills).toHaveLength(0);
+  expect(rejects.map((r) => r.reason)).toEqual(["insufficient cash"]);
+});
+
+test("trades model: takerFeeBps moves the cash check for a market buy", async () => {
+  const events = [tr(1, "BUY", 999_000, 1), tr(2, "BUY", 999_000, 1)];
+  const plan = { 1: [{ type: "market" as const, side: "BUY" as const, size: 0.001 }] };
+  // 代金 999 円に 0.05% なら 999.5 円で資金 1,000 円に収まり、0.12% なら 1,000.2 円で収まらない
+  const gmo = await run(events, plan, "trades", { capital: 1_000 });
+  expect(gmo.fills).toHaveLength(1);
+  const higher = await run(events, plan, "trades", { capital: 1_000, takerFeeBps: 12 });
+  expect(higher.fills).toHaveLength(0);
+  expect(higher.rejects.map((r) => r.reason)).toEqual(["insufficient cash"]);
+});
+
+test("book model: takerFeeBps moves the cash check for a market buy", async () => {
+  const events = [bk(1, [[999_000, 1]], [[998_000, 1]]), tr(2, "BUY", 999_000, 1)];
+  const plan = { 1: [{ type: "market" as const, side: "BUY" as const, size: 0.001 }] };
+  const gmo = await run(events, plan, "book", { capital: 1_000 });
+  expect(gmo.fills).toHaveLength(1);
+  const higher = await run(events, plan, "book", { capital: 1_000, takerFeeBps: 12 });
+  expect(higher.fills).toHaveLength(0);
+  expect(higher.rejects.map((r) => r.reason)).toEqual(["insufficient cash"]);
 });
 
 test("trades model: a limit buy at or above the last trade price is rejected as post-only", async () => {

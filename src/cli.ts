@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
-import { runBacktest, type StrategyFactory } from "./backtest.ts";
+import {
+  DEFAULT_MAKER_FEE_BPS,
+  DEFAULT_TAKER_FEE_BPS,
+  runBacktest,
+  type StrategyFactory,
+} from "./backtest.ts";
 import {
   csvEvents,
   csvFileDates,
@@ -58,7 +63,7 @@ function parseNumber(v: string): number {
   return n;
 }
 
-// 手数料・数量の刻み・値段の刻みは BTC 現物の値で固定している
+// 数量の刻みと値段の刻みは BTC 現物の値で固定している
 function parseBacktestSymbol(v: string): string {
   if (v !== "BTC") throw new InvalidArgumentError("backtest supports BTC (spot) only");
   return v;
@@ -96,6 +101,8 @@ type BacktestOpts = {
   capital: number;
   latencyMs: number;
   slippageBps: number;
+  makerFeeBps: number;
+  takerFeeBps: number;
   warmupDays: number;
 };
 
@@ -109,6 +116,12 @@ async function backtestReport(opts: BacktestOpts) {
   if (opts.capital <= 0) throw new Error("--capital must be positive");
   if (opts.latencyMs < 0) throw new Error("--latency-ms must not be negative");
   if (opts.slippageBps < 0) throw new Error("--slippage-bps must not be negative");
+  if (opts.takerFeeBps < 0 || opts.takerFeeBps >= 10_000) {
+    throw new Error("--taker-fee-bps must be at least 0 and below 10000");
+  }
+  if (Math.abs(opts.makerFeeBps) >= 10_000) {
+    throw new Error("--maker-fee-bps must be above -10000 and below 10000");
+  }
   if (opts.warmupDays < 0) throw new Error("--warmup-days must not be negative");
   const warmupMs = opts.warmupDays * DAY_MS;
 
@@ -154,6 +167,8 @@ async function backtestReport(opts: BacktestOpts) {
       capital: opts.capital,
       latencyMs: opts.latencyMs,
       slippageBps: opts.slippageBps,
+      makerFeeBps: opts.makerFeeBps,
+      takerFeeBps: opts.takerFeeBps,
       warmup: warmupMs > 0 ? csvRange(period.from - warmupMs, period.from) : undefined,
     });
     if (result.events === 0) throw new Error(`period "${period.name}" has no market data`);
@@ -233,6 +248,13 @@ program
   .option("--capital <jpy>", "starting cash in JPY", parseNumber, 10000)
   .option("--latency-ms <ms>", "order latency in milliseconds", parseNumber, 0)
   .option("--slippage-bps <bps>", "slippage for market orders, csv source only", parseNumber, 0)
+  .option(
+    "--maker-fee-bps <bps>",
+    "fee on maker fills, negative for a rebate",
+    parseNumber,
+    DEFAULT_MAKER_FEE_BPS,
+  )
+  .option("--taker-fee-bps <bps>", "fee on taker fills", parseNumber, DEFAULT_TAKER_FEE_BPS)
   .option(
     "--warmup-days <days>",
     "feed the strategy CSV trades for this many days before each period, without trading",
