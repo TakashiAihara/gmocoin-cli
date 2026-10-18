@@ -61,7 +61,13 @@ async function run(
   events: MarketEvent[],
   plan: Record<number, Action[]>,
   fillModel: FillModel,
-  opts: { capital?: number; latencyMs?: number; slippageBps?: number } = {},
+  opts: {
+    capital?: number;
+    latencyMs?: number;
+    slippageBps?: number;
+    makerFeeBps?: number;
+    takerFeeBps?: number;
+  } = {},
   onFill?: (f: Fill, ctx: Ctx) => Action[] | void,
 ) {
   const s = scripted(plan, onFill);
@@ -72,6 +78,8 @@ async function run(
     capital: opts.capital ?? 10_000,
     latencyMs: opts.latencyMs,
     slippageBps: opts.slippageBps,
+    makerFeeBps: opts.makerFeeBps,
+    takerFeeBps: opts.takerFeeBps,
   });
   return { ...s, result };
 }
@@ -145,6 +153,28 @@ test("trades model: a limit buy fills only on a trade below its price, at its pr
   expect(result.endCash).toBeCloseTo(10_000 - 1980 + 0.198, 9);
   expect(result.makerFills).toBe(1);
   expect(result.feesJpy).toBeCloseTo(-0.198, 9);
+});
+
+test("trades model: takerFeeBps sets the fee on market fills and on the end-of-period valuation", async () => {
+  const { fills, result } = await run(
+    [tr(1, "BUY", 1_000_000, 0.1), tr(2, "SELL", 1_200_000, 0.1)],
+    { 1: [{ type: "market", side: "BUY", size: 0.001 }] },
+    "trades",
+    { takerFeeBps: 12, makerFeeBps: 3 },
+  );
+  expect(fills[0]!.feeJpy).toBeCloseTo(1.44, 9);
+  expect(result.endEquity).toBeCloseTo(10_000 - 1200 - 1.44 + 1200 - 1.44, 9);
+});
+
+test("trades model: makerFeeBps sets the fee on limit fills", async () => {
+  const { fills } = await run(
+    [tr(1, "BUY", 1_000_000, 1), tr(2, "SELL", 990_000, 5), tr(4, "BUY", 989_999, 0.00001)],
+    { 1: [{ type: "limit", side: "BUY", price: 990_000, size: 0.002 }] },
+    "trades",
+    { takerFeeBps: 12, makerFeeBps: 3 },
+  );
+  expect(fills[0]!.liquidity).toBe("maker");
+  expect(fills[0]!.feeJpy).toBeCloseTo(0.594, 9);
 });
 
 test("trades model: a limit buy at or above the last trade price is rejected as post-only", async () => {

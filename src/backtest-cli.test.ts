@@ -182,6 +182,67 @@ test("backtest uses --capital and --slippage-bps", async () => {
   expect(p.takerSlippageBps).toBeCloseTo(1110, 9);
 });
 
+test("backtest charges --taker-fee-bps on fills and on the end-of-period valuation", async () => {
+  const { strategy, data, url } = setup(BOTH_DAYS);
+  const r = await backtest(
+    [
+      "--strategy",
+      strategy,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12T12:00:00Z",
+      "--to",
+      "2026-10-12T20:00:00Z",
+      "--maker-fee-bps",
+      "3",
+      "--taker-fee-bps",
+      "12",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  const p = JSON.parse(r.stdout).periods[0];
+  // 11,000,000 で 0.0001 BTC を買い (手数料 1.32)、12,000,000 で評価する (手数料 1.44)
+  expect(p.pnl).toBeCloseTo(1200 - 1100 - 1.32 - 1.44, 9);
+  expect(p.feesJpy).toBeCloseTo(1.32, 9);
+});
+
+test("backtest charges --maker-fee-bps on limit fills", async () => {
+  const { data, url } = setup(BOTH_DAYS);
+  // 最初の約定で 9,500,000 に 0.0001 BTC の指値買いを 1 回だけ置く
+  const strategy = join(dir!.path, "limit-once.ts");
+  writeFileSync(
+    strategy,
+    BUY_ONCE.replace(
+      `{ type: "market", side: "BUY", size: 0.0001 }`,
+      `{ type: "limit", side: "BUY", price: 9_500_000, size: 0.0001 }`,
+    ),
+  );
+  const r = await backtest(
+    [
+      "--strategy",
+      strategy,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12T12:00:00Z",
+      "--to",
+      "2026-10-12T23:00:00Z",
+      "--maker-fee-bps",
+      "3",
+      "--taker-fee-bps",
+      "12",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  const p = JSON.parse(r.stdout).periods[0];
+  // 22:00 の 9,000,000 の約定で 950 円ぶん約定する
+  expect(p.makerFills).toBe(1);
+  expect(p.feesJpy).toBeCloseTo(0.285, 9);
+});
+
 test("backtest exits 1 naming the day when a CSV is not published", async () => {
   const { strategy, data, url } = setup({
     "/data/trades/BTC/2026/10/20261012_BTC.csv.gz": CSV_1012,

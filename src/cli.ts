@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
-import { runBacktest, type StrategyFactory } from "./backtest.ts";
+import {
+  DEFAULT_MAKER_FEE_BPS,
+  DEFAULT_TAKER_FEE_BPS,
+  runBacktest,
+  type StrategyFactory,
+} from "./backtest.ts";
 import {
   csvEvents,
   csvFileDates,
@@ -96,6 +101,8 @@ type BacktestOpts = {
   capital: number;
   latencyMs: number;
   slippageBps: number;
+  makerFeeBps: number;
+  takerFeeBps: number;
   warmupDays: number;
 };
 
@@ -154,6 +161,8 @@ async function backtestReport(opts: BacktestOpts) {
       capital: opts.capital,
       latencyMs: opts.latencyMs,
       slippageBps: opts.slippageBps,
+      makerFeeBps: opts.makerFeeBps,
+      takerFeeBps: opts.takerFeeBps,
       warmup: warmupMs > 0 ? csvRange(period.from - warmupMs, period.from) : undefined,
     });
     if (result.events === 0) throw new Error(`period "${period.name}" has no market data`);
@@ -233,6 +242,18 @@ program
   .option("--capital <jpy>", "starting cash in JPY", parseNumber, 10000)
   .option("--latency-ms <ms>", "order latency in milliseconds", parseNumber, 0)
   .option("--slippage-bps <bps>", "slippage for market orders, csv source only", parseNumber, 0)
+  .option(
+    "--maker-fee-bps <bps>",
+    "fee on maker fills, negative for a rebate (default: GMO Coin spot)",
+    parseNumber,
+    DEFAULT_MAKER_FEE_BPS,
+  )
+  .option(
+    "--taker-fee-bps <bps>",
+    "fee on taker fills (default: GMO Coin spot)",
+    parseNumber,
+    DEFAULT_TAKER_FEE_BPS,
+  )
   .option(
     "--warmup-days <days>",
     "feed the strategy CSV trades for this many days before each period, without trading",
