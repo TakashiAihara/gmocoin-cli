@@ -243,6 +243,55 @@ test("backtest charges --maker-fee-bps on limit fills", async () => {
   expect(p.feesJpy).toBeCloseTo(0.285, 9);
 });
 
+test("backtest defaults to GMO Coin's maker rebate on limit fills", async () => {
+  const { data, url } = setup(BOTH_DAYS);
+  const strategy = join(dir!.path, "limit-once.ts");
+  writeFileSync(
+    strategy,
+    BUY_ONCE.replace(
+      `{ type: "market", side: "BUY", size: 0.0001 }`,
+      `{ type: "limit", side: "BUY", price: 9_500_000, size: 0.0001 }`,
+    ),
+  );
+  const r = await backtest(
+    [
+      "--strategy",
+      strategy,
+      "--data",
+      data,
+      "--from",
+      "2026-10-12T12:00:00Z",
+      "--to",
+      "2026-10-12T23:00:00Z",
+    ],
+    url,
+  );
+  expect(r.code).toBe(0);
+  const p = JSON.parse(r.stdout).periods[0];
+  expect(p.makerFills).toBe(1);
+  expect(p.feesJpy).toBeCloseTo(-0.095, 9);
+});
+
+test("backtest rejects a negative --taker-fee-bps and a fee of 100% or more", async () => {
+  for (const args of [
+    ["--taker-fee-bps", "-1"],
+    ["--taker-fee-bps", "10000"],
+    ["--maker-fee-bps", "-10000"],
+  ]) {
+    const r = await backtest([
+      "--strategy",
+      "x.ts",
+      "--from",
+      "2026-10-12",
+      "--to",
+      "2026-10-13",
+      ...args,
+    ]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain(`${args[0]} must`);
+  }
+});
+
 test("backtest exits 1 naming the day when a CSV is not published", async () => {
   const { strategy, data, url } = setup({
     "/data/trades/BTC/2026/10/20261012_BTC.csv.gz": CSV_1012,

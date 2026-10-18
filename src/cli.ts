@@ -63,7 +63,7 @@ function parseNumber(v: string): number {
   return n;
 }
 
-// 手数料・数量の刻み・値段の刻みは BTC 現物の値で固定している
+// 数量の刻みと値段の刻みは BTC 現物の値で固定している
 function parseBacktestSymbol(v: string): string {
   if (v !== "BTC") throw new InvalidArgumentError("backtest supports BTC (spot) only");
   return v;
@@ -116,6 +116,12 @@ async function backtestReport(opts: BacktestOpts) {
   if (opts.capital <= 0) throw new Error("--capital must be positive");
   if (opts.latencyMs < 0) throw new Error("--latency-ms must not be negative");
   if (opts.slippageBps < 0) throw new Error("--slippage-bps must not be negative");
+  if (opts.takerFeeBps < 0 || opts.takerFeeBps >= 10_000) {
+    throw new Error("--taker-fee-bps must be at least 0 and below 10000");
+  }
+  if (Math.abs(opts.makerFeeBps) >= 10_000) {
+    throw new Error("--maker-fee-bps must be above -10000 and below 10000");
+  }
   if (opts.warmupDays < 0) throw new Error("--warmup-days must not be negative");
   const warmupMs = opts.warmupDays * DAY_MS;
 
@@ -244,16 +250,11 @@ program
   .option("--slippage-bps <bps>", "slippage for market orders, csv source only", parseNumber, 0)
   .option(
     "--maker-fee-bps <bps>",
-    "fee on maker fills, negative for a rebate (default: GMO Coin spot)",
+    "fee on maker fills, negative for a rebate",
     parseNumber,
     DEFAULT_MAKER_FEE_BPS,
   )
-  .option(
-    "--taker-fee-bps <bps>",
-    "fee on taker fills (default: GMO Coin spot)",
-    parseNumber,
-    DEFAULT_TAKER_FEE_BPS,
-  )
+  .option("--taker-fee-bps <bps>", "fee on taker fills", parseNumber, DEFAULT_TAKER_FEE_BPS)
   .option(
     "--warmup-days <days>",
     "feed the strategy CSV trades for this many days before each period, without trading",

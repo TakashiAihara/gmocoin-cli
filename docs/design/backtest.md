@@ -5,7 +5,7 @@
 - `gmocoin backtest` は戦略ファイル (TypeScript) を読み、過去の約定 (と板) を時刻順に流して、仮想の口座で損益を出す。注文は出さず、API キーは要らない
 - 入力は 2 種類から選ぶ。`--source csv` は GMO の日次約定 CSV (2021-01-01 から、自動で取得してキャッシュ)、`--source record` は `gmocoin record` の出力 (板 + 約定)
 - 指値は Post-only (GMO の `SOK`) として扱う。record では板の待ち行列を再現して約定させ、csv では価格を突き抜けた約定が出たときだけ約定させる
-- 手数料は既定で GMO コインの現物の Maker -0.01% (受け取り) / Taker 0.05% を JPY で計上する。`--maker-fee-bps` / `--taker-fee-bps` で変えられる (Coincheck なら両方 0)。成行は record では板を食って約定価格がずれ、csv では次の約定価格に `--slippage-bps` を不利な側に足す
+- 手数料は既定で GMO コインの現物の Maker -0.01% (受け取り) / Taker 0.05% を JPY で計上する。`--maker-fee-bps` / `--taker-fee-bps` で変えられる。変わるのは手数料だけで、数量と値段の刻みは GMO の BTC 現物のまま。成行は record では板を食って約定価格がずれ、csv では次の約定価格に `--slippage-bps` を不利な側に足す
 - `--split` で学習用と検証用の期間を分け、それぞれ新しい口座と新しい戦略で回す。検証用の期間で計画の成功基準 (手数料込みの損益 > 0、最大ドローダウン ≤ 20%) を満たすかを `pass` で出す
 - 結果は stdout に JSON、CSV の取得 (1 日 1 行) と警告は stderr
 

@@ -169,6 +169,8 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   const slip = slippageBps / 10_000;
   const makerFee = makerFeeBps / 10_000;
   const takerFee = takerFeeBps / 10_000;
+  // 指値の買いは、払う側の Maker 手数料まで現金を押さえる (受け取りなら代金だけ)
+  const limitBuyCost = (price: number, size: number) => price * size * (1 + Math.max(0, makerFee));
 
   let cash = capital;
   let position = 0;
@@ -199,7 +201,10 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
   };
 
   const reservedBuy = () =>
-    resting.reduce((s, r) => (r.side === "BUY" ? s + r.price * (r.size - r.filled) : s), 0);
+    resting.reduce(
+      (s, r) => (r.side === "BUY" ? s + limitBuyCost(r.price, r.size - r.filled) : s),
+      0,
+    );
 
   const reservedSell = () =>
     resting.reduce((s, r) => (r.side === "SELL" ? s + (r.size - r.filled) : s), 0);
@@ -327,7 +332,7 @@ export async function runBacktest(opts: BacktestOptions): Promise<BacktestResult
       reject(id, t, action, "post-only order would take liquidity");
       return;
     }
-    const why = shortfall(action.side, action.size, action.price * action.size);
+    const why = shortfall(action.side, action.size, limitBuyCost(action.price, action.size));
     if (why) {
       reject(id, t, action, why);
       return;
