@@ -194,6 +194,18 @@ test("trades model: a positive makerFeeBps is held back with a limit buy's cash"
   expect(rebate.fills).toHaveLength(2);
 });
 
+test("trades model: a maker rebate is not counted toward a limit buy's cash", async () => {
+  // 代金 1,000.05 円は資金 1,000 円を超える。受け取る 0.01% を差し引けば収まるが、受け取りは約定してからなので押さえない
+  const { fills, rejects } = await run(
+    [tr(1, "BUY", 1_010_000, 1), tr(2, "SELL", 1_000_000, 1)],
+    { 1: [{ type: "limit", side: "BUY", price: 1_000_050, size: 0.001 }] },
+    "trades",
+    { capital: 1_000 },
+  );
+  expect(fills).toHaveLength(0);
+  expect(rejects.map((r) => r.reason)).toEqual(["insufficient cash"]);
+});
+
 test("trades model: takerFeeBps moves the cash check for a market buy", async () => {
   const events = [tr(1, "BUY", 999_000, 1), tr(2, "BUY", 999_000, 1)];
   const plan = { 1: [{ type: "market" as const, side: "BUY" as const, size: 0.001 }] };

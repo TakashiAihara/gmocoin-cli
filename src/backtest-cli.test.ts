@@ -277,6 +277,7 @@ test("backtest rejects a negative --taker-fee-bps and a fee of 100% or more", as
     ["--taker-fee-bps", "-1"],
     ["--taker-fee-bps", "10000"],
     ["--maker-fee-bps", "-10000"],
+    ["--maker-fee-bps", "10000"],
   ]) {
     const r = await backtest([
       "--strategy",
