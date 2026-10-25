@@ -186,6 +186,61 @@ async function backtestReport(opts: BacktestOpts) {
   return { symbol: opts.symbol, source: opts.source, periods: results, pass };
 }
 
+type ReplayOpts = { from: number; to: number; source: Source; data: string; symbol: string };
+
+async function replay(opts: ReplayOpts) {
+  if (opts.from >= opts.to) throw new Error("--to must be after --from");
+  // 置き場所の打ち間違いを「期間に動きが無い」(exit 3) と読ませない
+  const recorded = () =>
+    ["orderbooks", "trades"].some((c) => existsSync(join(opts.data, c, opts.symbol)));
+  if (opts.source === "record" && !recorded()) {
+    throw new Error(`no recorded ${opts.symbol} under ${opts.data}`);
+  }
+  const events =
+    opts.source === "csv"
+      ? csvEvents({
+          paths: await csvPaths({
+            data: opts.data,
+            symbol: opts.symbol,
+            ranges: [[opts.from, opts.to]],
+          }),
+          from: opts.from,
+          to: opts.to,
+        })
+      : recordEvents({ dataDir: opts.data, symbol: opts.symbol, from: opts.from, to: opts.to });
+
+  // 書き込みの失敗は write のコールバックで受ける。stream の error イベントは聞かないと例外で落ちるので捨てる
+  process.stdout.on("error", () => {});
+  // 書けたのを待ってから次を作る。読む側が遅ければここで待つので、書いた分が溜まり続けない
+  const write = (chunk: string) =>
+    new Promise<void>((done, fail) =>
+      process.stdout.write(chunk, (err) => (err ? fail(err) : done())),
+    );
+
+  let n = 0;
+  let buf = "";
+  try {
+    for await (const e of events) {
+      buf += JSON.stringify(e) + "\n";
+      n++;
+      // 1 行ずつ書くと遅いのでまとめる
+      if (buf.length >= 1 << 16) {
+        await write(buf);
+        buf = "";
+      }
+    }
+    if (buf !== "") await write(buf);
+  } catch (err) {
+    // 読む側が途中で閉じた (`| head` 等) のは、読む側が止めると決めたこと。失敗にせず読むのをやめる
+    if ((err as { code?: string }).code === "EPIPE") return n;
+    throw err;
+  }
+  return n;
+}
+
+// 読む側が「期間に動きが無い」を他の失敗と分けて扱えるよう、別の exit code にする
+const EXIT_NO_DATA = 3;
+
 const program = new Command().name("gmocoin").description("CLI for the GMO Coin API");
 
 program
@@ -264,6 +319,34 @@ program
   .action(async (opts: BacktestOpts) => {
     try {
       console.log(JSON.stringify(await backtestReport(opts), null, 2));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("replay")
+  .description("print market data in [from, to) as JSONL, one trade or book per line in time order")
+  .requiredOption(
+    "--from <time>",
+    "start, inclusive (YYYY-MM-DD as UTC midnight or ISO 8601)",
+    parseTime,
+  )
+  .requiredOption(
+    "--to <time>",
+    "end, exclusive (YYYY-MM-DD as UTC midnight or ISO 8601)",
+    parseTime,
+  )
+  .option("--source <source>", "csv or record", parseSource, "csv")
+  .option("--data <dir>", "data directory (csv cache or record files)", "./data")
+  .option("--symbol <symbol>", "symbol to replay", parseSymbol, "BTC")
+  .action(async (opts: ReplayOpts) => {
+    try {
+      if ((await replay(opts)) === 0) {
+        console.error("no market data in the range");
+        process.exit(EXIT_NO_DATA);
+      }
     } catch (err) {
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);

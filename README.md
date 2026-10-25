@@ -3,7 +3,7 @@ CLI for the GMO Coin API (market data recording, backtesting, trading)
 
 ## Status
 
-- `record` and `backtest` work. Placing orders is not implemented yet, and no command needs an API key.
+- `record`, `backtest` and `replay` work. Placing orders is not implemented yet, and no command needs an API key.
 - This is an unofficial tool, not affiliated with GMO Coin. Backtest results are not investment advice.
 
 ## Install
@@ -67,6 +67,17 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 - `--source csv` (default) downloads the daily trade CSVs into `<data>/csv/<symbol>/` on first use. Set `GMOCOIN_TRADES_CSV_URL` to point at another mirror.
 - `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0). `--maker-fee-bps` and `--taker-fee-bps` set the fees on limit and market fills (default -1 and 5, GMO Coin spot; a negative fee is a rebate). `--warmup-days` feeds the strategy this many days of CSV trades before each period without trading (default 0); strategies with long lookbacks such as `strategies/trend-ensemble.ts` need it. Each period also reports `takerSlippageBps`, how much worse market fills were than the trade price the order was decided on.
 - A period with no market data exits 1. Otherwise the exit code is 0 whether or not the strategy passes.
+
+## replay
+
+Prints market data in `[from, to)` as JSONL on stdout, one trade or order book per line in time order (recorded books can step back by a few ms), for tools that evaluate strategies outside this repo. It reads the same inputs as `backtest`:
+
+```sh
+gmocoin replay --from 2026-10-12 --to 2026-10-13
+gmocoin replay --source record --data /srv/gmocoin --from 2026-10-12 --to 2026-10-13
+```
+
+Each line is `{"kind":"trade","t":<ms>,"side":"BUY"|"SELL","price":<n>,"size":<n>}` or `{"kind":"book","t":<ms>,"asks":[{"price":<n>,"size":<n>}],"bids":[...]}`. A range with no data exits 3; other failures exit 1. The spec is in `docs/design/replay.md`.
 
 ## Develop
 
