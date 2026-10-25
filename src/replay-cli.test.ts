@@ -167,6 +167,22 @@ test("replay exits 3 when the range has no market data instead of printing nothi
   expect(r.stdout).toBe("");
 });
 
+test("replay exits 3, not 1, when only order books were recorded and none fall in the range", async () => {
+  dir = tempDir();
+  mkdirSync(join(dir.path, "orderbooks", "BTC"), { recursive: true });
+  const args = [
+    "--source",
+    "record",
+    "--data",
+    dir.path,
+    "--from",
+    "2026-10-13",
+    "--to",
+    "2026-10-14",
+  ];
+  expect((await replay(args)).code).toBe(3);
+});
+
 test("replay exits 1 when there is no recording of the symbol under --data", async () => {
   dir = tempDir();
   mkdirSync(join(dir.path, "trades", "BTC"), { recursive: true });

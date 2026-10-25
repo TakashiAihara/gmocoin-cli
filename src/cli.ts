@@ -191,10 +191,9 @@ type ReplayOpts = { from: number; to: number; source: Source; data: string; symb
 async function replay(opts: ReplayOpts) {
   if (opts.from >= opts.to) throw new Error("--to must be after --from");
   // 置き場所の打ち間違いを「期間に動きが無い」(exit 3) と読ませない
-  const recorded = ["orderbooks", "trades"].some((c) =>
-    existsSync(join(opts.data, c, opts.symbol)),
-  );
-  if (opts.source === "record" && !recorded) {
+  const recorded = () =>
+    ["orderbooks", "trades"].some((c) => existsSync(join(opts.data, c, opts.symbol)));
+  if (opts.source === "record" && !recorded()) {
     throw new Error(`no recorded ${opts.symbol} under ${opts.data}`);
   }
   const events =
