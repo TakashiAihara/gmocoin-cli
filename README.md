@@ -75,7 +75,7 @@ bun install
 bun run check   # typecheck, lint, format check and tests
 ```
 
-Design specs are in `docs/design/`, strategy results in `docs/strategies.md`, and the paper trading plan in `docs/paper-trading.md`.
+Design specs are in `docs/design/`, strategy results in `docs/strategies.md`, the paper trading plan in `docs/paper-trading.md`, and the terms they use in `docs/glossary.md`.
 
 ## License
 

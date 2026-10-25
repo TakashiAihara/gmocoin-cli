@@ -70,7 +70,7 @@ export default function (): Strategy {
 
 - default export は引数なしの関数で、期間ごとに 1 回呼ばれる。状態は戻り値のオブジェクトに閉じ込める (学習用の状態が検証用に漏れない)
 - コールバックは `onTrade` / `onBook` / `onFill` / `onReject` で、どれも任意。戻り値はアクションの配列か無し
-- `ctx` は `time` (ms)、`cash` (JPY)、`position` (BTC)、`lastPrice`、`book` (record の最新の板。csv では無し)、`openOrders` (板に置かれている指値)、`pending` (まだ効いていない注文と取消。`--latency-ms` の間に同じ注文を出し直さないために見る)
+- `ctx` は `time` (ms)、`cash` (JPY)、`position` (BTC)、`lastPrice`、`book` (record の最新の板から、それ以降に成行が食った分を引いたもの。csv では無し。下の「成行」節)、`openOrders` (板に置かれている指値)、`pending` (まだ効いていない注文と取消。`--latency-ms` の間に同じ注文を出し直さないために見る)
 - アクションは `{type:"market", side, size}` / `{type:"limit", side, price, size}` / `{type:"cancel", id}`。`market` と `limit` には戦略が付けた `id` を任意で載せられ、`onFill` / `onReject` に返る
 - 数量は 0.00001 BTC 単位、指値は 1 円単位 (GMO の BTC 現物の `minOrderSize` / `sizeStep` / `tickSize`)。外れたら拒否する
 - 現物だけを扱う。買いは使える現金 (指値の買いで押さえた分を除く) を、売りは持っている BTC (指値の売りで押さえた分を除く) を超えると拒否する
