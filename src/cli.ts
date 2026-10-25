@@ -186,6 +186,34 @@ async function backtestReport(opts: BacktestOpts) {
   return { symbol: opts.symbol, source: opts.source, periods: results, pass };
 }
 
+type ReplayOpts = { from: number; to: number; source: Source; data: string; symbol: string };
+
+async function replay(opts: ReplayOpts) {
+  if (opts.from >= opts.to) throw new Error("--to must be after --from");
+  const events =
+    opts.source === "csv"
+      ? csvEvents({
+          paths: await csvPaths({
+            data: opts.data,
+            symbol: opts.symbol,
+            ranges: [[opts.from, opts.to]],
+          }),
+          from: opts.from,
+          to: opts.to,
+        })
+      : recordEvents({ dataDir: opts.data, symbol: opts.symbol, from: opts.from, to: opts.to });
+
+  // 1 行ずつ書くと 1,700 万件で遅いので、まとめて書く
+  const out = Bun.stdout.writer();
+  let n = 0;
+  for await (const e of events) {
+    out.write(JSON.stringify(e) + "\n");
+    if (++n % 10_000 === 0) await out.flush();
+  }
+  await out.end();
+  if (n === 0) throw new Error("no market data in the range");
+}
+
 const program = new Command().name("gmocoin").description("CLI for the GMO Coin API");
 
 program
@@ -264,6 +292,31 @@ program
   .action(async (opts: BacktestOpts) => {
     try {
       console.log(JSON.stringify(await backtestReport(opts), null, 2));
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("replay")
+  .description("print market data in [from, to) as JSONL, one trade or book per line in time order")
+  .requiredOption(
+    "--from <time>",
+    "start, inclusive (YYYY-MM-DD as UTC midnight or ISO 8601)",
+    parseTime,
+  )
+  .requiredOption(
+    "--to <time>",
+    "end, exclusive (YYYY-MM-DD as UTC midnight or ISO 8601)",
+    parseTime,
+  )
+  .option("--source <source>", "csv or record", parseSource, "csv")
+  .option("--data <dir>", "data directory (csv cache or record files)", "./data")
+  .option("--symbol <symbol>", "symbol to replay", parseSymbol, "BTC")
+  .action(async (opts: ReplayOpts) => {
+    try {
+      await replay(opts);
     } catch (err) {
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);

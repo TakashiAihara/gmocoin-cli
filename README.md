@@ -68,6 +68,17 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 - `--capital` is the starting cash in JPY (default 10000). `--latency-ms` delays each order (default 0). `--slippage-bps` applies to market orders and is for `--source csv` only (default 0). `--maker-fee-bps` and `--taker-fee-bps` set the fees on limit and market fills (default -1 and 5, GMO Coin spot; a negative fee is a rebate). `--warmup-days` feeds the strategy this many days of CSV trades before each period without trading (default 0); strategies with long lookbacks such as `strategies/trend-ensemble.ts` need it. Each period also reports `takerSlippageBps`, how much worse market fills were than the trade price the order was decided on.
 - A period with no market data exits 1. Otherwise the exit code is 0 whether or not the strategy passes.
 
+## replay
+
+Prints market data in `[from, to)` as JSONL on stdout, one trade or order book per line in time order, for tools that evaluate strategies outside this repo. It reads the same inputs as `backtest`:
+
+```sh
+gmocoin replay --from 2026-10-15 --to 2026-10-29
+gmocoin replay --source record --data /srv/gmocoin --from 2026-10-15 --to 2026-10-29
+```
+
+Each line is `{"kind":"trade","t":<ms>,"side":"BUY"|"SELL","price":<n>,"size":<n>}` or `{"kind":"book","t":<ms>,"asks":[{"price":<n>,"size":<n>}],"bids":[...]}`. A range with no data exits 1. The spec is in `docs/design/replay.md`.
+
 ## Develop
 
 ```bash
