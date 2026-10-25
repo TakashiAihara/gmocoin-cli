@@ -70,7 +70,7 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 
 ## replay
 
-Prints market data in `[from, to)` as JSONL on stdout, one trade or order book per line in time order, for tools that evaluate strategies outside this repo. It reads the same inputs as `backtest`:
+Prints market data in `[from, to)` as JSONL on stdout, one trade or order book per line in time order (recorded books can step back by a few ms), for tools that evaluate strategies outside this repo. It reads the same inputs as `backtest`:
 
 ```sh
 gmocoin replay --from 2026-10-12 --to 2026-10-13

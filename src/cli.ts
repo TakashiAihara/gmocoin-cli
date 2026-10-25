@@ -190,6 +190,13 @@ type ReplayOpts = { from: number; to: number; source: Source; data: string; symb
 
 async function replay(opts: ReplayOpts) {
   if (opts.from >= opts.to) throw new Error("--to must be after --from");
+  // 置き場所の打ち間違いを「期間に動きが無い」(exit 3) と読ませない
+  const recorded = ["orderbooks", "trades"].some((c) =>
+    existsSync(join(opts.data, c, opts.symbol)),
+  );
+  if (opts.source === "record" && !recorded) {
+    throw new Error(`no recorded ${opts.symbol} under ${opts.data}`);
+  }
   const events =
     opts.source === "csv"
       ? csvEvents({
@@ -203,33 +210,32 @@ async function replay(opts: ReplayOpts) {
         })
       : recordEvents({ dataDir: opts.data, symbol: opts.symbol, from: opts.from, to: opts.to });
 
-  // 読む側が途中で閉じた (`| head` 等) のは、読む側が止めると決めたこと。失敗にせず読むのをやめる
-  let closed = false;
-  let failed: Error | undefined;
-  process.stdout.on("error", (err: Error & { code?: string }) => {
-    if (err.code === "EPIPE") closed = true;
-    else failed = err;
-  });
-  const drained = () =>
-    new Promise<void>((done) => {
-      process.stdout.once("drain", done);
-      process.stdout.once("error", () => done());
-    });
+  // 書き込みの失敗は write のコールバックで受ける。stream の error イベントは聞かないと例外で落ちるので捨てる
+  process.stdout.on("error", () => {});
+  // 書けたのを待ってから次を作る。読む側が遅ければここで待つので、書いた分が溜まり続けない
+  const write = (chunk: string) =>
+    new Promise<void>((done, fail) =>
+      process.stdout.write(chunk, (err) => (err ? fail(err) : done())),
+    );
 
   let n = 0;
   let buf = "";
-  for await (const e of events) {
-    if (closed || failed) break;
-    buf += JSON.stringify(e) + "\n";
-    n++;
-    // 1 行ずつ書くと遅いのでまとめ、読む側が遅ければ掃けるのを待つ (待たないと書いた分が溜まり続ける)
-    if (buf.length >= 1 << 16) {
-      if (!process.stdout.write(buf)) await drained();
-      buf = "";
+  try {
+    for await (const e of events) {
+      buf += JSON.stringify(e) + "\n";
+      n++;
+      // 1 行ずつ書くと遅いのでまとめる
+      if (buf.length >= 1 << 16) {
+        await write(buf);
+        buf = "";
+      }
     }
+    if (buf !== "") await write(buf);
+  } catch (err) {
+    // 読む側が途中で閉じた (`| head` 等) のは、読む側が止めると決めたこと。失敗にせず読むのをやめる
+    if ((err as { code?: string }).code === "EPIPE") return n;
+    throw err;
   }
-  if (!closed && !failed && buf !== "" && !process.stdout.write(buf)) await drained();
-  if (failed) throw failed;
   return n;
 }
 

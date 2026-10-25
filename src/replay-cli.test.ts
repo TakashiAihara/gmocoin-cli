@@ -150,7 +150,8 @@ test("replay --source record merges books and trades by time inside [from, to), 
 
 test("replay exits 3 when the range has no market data instead of printing nothing", async () => {
   dir = tempDir();
-  const r = await replay([
+  mkdirSync(join(dir.path, "trades", "BTC"), { recursive: true });
+  const args = [
     "--source",
     "record",
     "--data",
@@ -159,10 +160,29 @@ test("replay exits 3 when the range has no market data instead of printing nothi
     "2026-10-13",
     "--to",
     "2026-10-14",
-  ]);
+  ];
+  const r = await replay(args);
   expect(r.code).toBe(3);
   expect(r.stderr).toContain("no market data");
   expect(r.stdout).toBe("");
+});
+
+test("replay exits 1 when there is no recording of the symbol under --data", async () => {
+  dir = tempDir();
+  mkdirSync(join(dir.path, "trades", "BTC"), { recursive: true });
+  const args = [
+    "--source",
+    "record",
+    "--data",
+    dir.path,
+    "--from",
+    "2026-10-13",
+    "--to",
+    "2026-10-14",
+  ];
+  const r = await replay([...args, "--symbol", "ETH"]);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain(`no recorded ETH under ${dir.path}`);
 });
 
 test("replay rejects a range that ends before it starts or is empty", async () => {
@@ -216,4 +236,40 @@ test("replay exits 0 without errors when the reader closes early", async () => {
   const [stderr, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
   expect(stderr).toBe("fetching CSV 20261012 (1/1)\n");
   expect(code).toBe(0);
+});
+
+test("replay exits 1 when stdout cannot be written", async () => {
+  dir = tempDir();
+  const data = join(dir.path, "rec");
+  mkdirSync(join(data, "trades", "BTC"), { recursive: true });
+  const msg = {
+    price: "5000000",
+    side: "BUY",
+    size: "0.01",
+    timestamp: "2026-10-13T00:00:01.000Z",
+  };
+  writeFileSync(
+    join(data, "trades", "BTC", "2026-10-13T000000.000Z.jsonl.gz"),
+    gzipSync(JSON.stringify({ recv_at: msg.timestamp, msg }) + "\n"),
+  );
+  // /dev/full は書くと ENOSPC を返す (Linux)
+  const p = Bun.spawn(
+    [
+      "bun",
+      CLI,
+      "replay",
+      "--source",
+      "record",
+      "--data",
+      data,
+      "--from",
+      "2026-10-13",
+      "--to",
+      "2026-10-14",
+    ],
+    { stdout: Bun.file("/dev/full"), stderr: "pipe" },
+  );
+  const [stderr, code] = await Promise.all([new Response(p.stderr).text(), p.exited]);
+  expect(stderr).toContain("ENOSPC");
+  expect(code).toBe(1);
 });
