@@ -3,7 +3,7 @@ CLI for the GMO Coin API (market data recording, backtesting, trading)
 
 ## Status
 
-- `record` and `backtest` work. Placing orders is not implemented yet, and no command needs an API key.
+- `record`, `backtest` and `replay` work. Placing orders is not implemented yet, and no command needs an API key.
 - This is an unofficial tool, not affiliated with GMO Coin. Backtest results are not investment advice.
 
 ## Install
@@ -73,11 +73,11 @@ bun src/cli.ts backtest --strategy strategies/sma-cross.ts --source record --dat
 Prints market data in `[from, to)` as JSONL on stdout, one trade or order book per line in time order, for tools that evaluate strategies outside this repo. It reads the same inputs as `backtest`:
 
 ```sh
-gmocoin replay --from 2026-10-15 --to 2026-10-29
-gmocoin replay --source record --data /srv/gmocoin --from 2026-10-15 --to 2026-10-29
+gmocoin replay --from 2026-10-12 --to 2026-10-13
+gmocoin replay --source record --data /srv/gmocoin --from 2026-10-12 --to 2026-10-13
 ```
 
-Each line is `{"kind":"trade","t":<ms>,"side":"BUY"|"SELL","price":<n>,"size":<n>}` or `{"kind":"book","t":<ms>,"asks":[{"price":<n>,"size":<n>}],"bids":[...]}`. A range with no data exits 1. The spec is in `docs/design/replay.md`.
+Each line is `{"kind":"trade","t":<ms>,"side":"BUY"|"SELL","price":<n>,"size":<n>}` or `{"kind":"book","t":<ms>,"asks":[{"price":<n>,"size":<n>}],"bids":[...]}`. A range with no data exits 3; other failures exit 1. The spec is in `docs/design/replay.md`.
 
 ## Develop
 

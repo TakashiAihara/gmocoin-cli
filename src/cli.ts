@@ -203,16 +203,38 @@ async function replay(opts: ReplayOpts) {
         })
       : recordEvents({ dataDir: opts.data, symbol: opts.symbol, from: opts.from, to: opts.to });
 
-  // 1 行ずつ書くと 1,700 万件で遅いので、まとめて書く
-  const out = Bun.stdout.writer();
+  // 読む側が途中で閉じた (`| head` 等) のは、読む側が止めると決めたこと。失敗にせず読むのをやめる
+  let closed = false;
+  let failed: Error | undefined;
+  process.stdout.on("error", (err: Error & { code?: string }) => {
+    if (err.code === "EPIPE") closed = true;
+    else failed = err;
+  });
+  const drained = () =>
+    new Promise<void>((done) => {
+      process.stdout.once("drain", done);
+      process.stdout.once("error", () => done());
+    });
+
   let n = 0;
+  let buf = "";
   for await (const e of events) {
-    out.write(JSON.stringify(e) + "\n");
-    if (++n % 10_000 === 0) await out.flush();
+    if (closed || failed) break;
+    buf += JSON.stringify(e) + "\n";
+    n++;
+    // 1 行ずつ書くと遅いのでまとめ、読む側が遅ければ掃けるのを待つ (待たないと書いた分が溜まり続ける)
+    if (buf.length >= 1 << 16) {
+      if (!process.stdout.write(buf)) await drained();
+      buf = "";
+    }
   }
-  await out.end();
-  if (n === 0) throw new Error("no market data in the range");
+  if (!closed && !failed && buf !== "" && !process.stdout.write(buf)) await drained();
+  if (failed) throw failed;
+  return n;
 }
+
+// 読む側が「期間に動きが無い」を他の失敗と分けて扱えるよう、別の exit code にする
+const EXIT_NO_DATA = 3;
 
 const program = new Command().name("gmocoin").description("CLI for the GMO Coin API");
 
@@ -316,7 +338,10 @@ program
   .option("--symbol <symbol>", "symbol to replay", parseSymbol, "BTC")
   .action(async (opts: ReplayOpts) => {
     try {
-      await replay(opts);
+      if ((await replay(opts)) === 0) {
+        console.error("no market data in the range");
+        process.exit(EXIT_NO_DATA);
+      }
     } catch (err) {
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);
