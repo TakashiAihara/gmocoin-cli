@@ -311,3 +311,52 @@ test("an active order without a price prints price null", async () => {
   expect(r.code).toBe(0);
   expect(JSON.parse(r.stdout)[0]).toMatchObject({ orderId: "5", type: "market", price: null });
 });
+
+for (const size of ["0", "-1", "1e-4", "abc", ".5"]) {
+  test(`--size ${size} is refused before anything is sent`, async () => {
+    const api = fakePrivate(() => ok("1"));
+    const r = await run(["order", "--side", "BUY", "--type", "market", "--size", size], api.url);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("must be a positive decimal");
+    expect(api.reqs.length).toBe(0);
+  });
+}
+
+test("a market order with --price is refused before anything is sent", async () => {
+  const api = fakePrivate(() => ok("1"));
+  const r = await run(
+    ["order", "--side", "BUY", "--type", "market", "--size", "0.001", "--price", "15000000"],
+    api.url,
+  );
+  expect(r.code).not.toBe(0);
+  expect(r.stderr).toContain("--price and --post-only are for limit orders only");
+  expect(api.reqs.length).toBe(0);
+});
+
+test("a leverage symbol is refused for order before anything is sent", async () => {
+  const api = fakePrivate(() => ok("1"));
+  const r = await run(
+    ["order", "--symbol", "BTC_JPY", "--side", "BUY", "--type", "market", "--size", "0.01"],
+    api.url,
+  );
+  expect(r.code).not.toBe(0);
+  expect(r.stderr).toContain("order supports spot symbols only");
+  expect(api.reqs.length).toBe(0);
+});
+
+for (const id of ["abc", "1e3", "9007199254740993"]) {
+  test(`cancel ${id} is refused before anything is sent`, async () => {
+    const api = fakePrivate(() => ok());
+    const r = await run(["cancel", id], api.url);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain(`not an order id: ${id}`);
+    expect(api.reqs.length).toBe(0);
+  });
+}
+
+test("a rejection without messages still exits 4 with an empty list", async () => {
+  const api = fakePrivate(() => ({ status: 5 }));
+  const r = await run(["balance"], api.url);
+  expect(r.code).toBe(4);
+  expect(JSON.parse(r.stderr)).toEqual({ status: 5, messages: [] });
+});

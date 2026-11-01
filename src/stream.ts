@@ -74,12 +74,18 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     subscribeTimer = setTimeout(() => subscribe(sock, i + 1), subscribeIntervalMs);
   }
 
-  function receive(text: string) {
-    let msg: { channel?: unknown; symbol?: unknown; timestamp?: unknown };
+  function receive(sock: WebSocket, text: string) {
+    let msg: { channel?: unknown; symbol?: unknown; timestamp?: unknown; error?: unknown };
     try {
       msg = JSON.parse(text);
     } catch {
       log(`skipped message: ${text.slice(0, 200).replace(/[\r\n]/g, " ")}`);
+      return;
+    }
+    // 購読の拒否 (ERR-5003 Request too many 等) は、板が届き続けると約定だけ黙って止まる。
+    // 繋ぎ直して全部購読し直す
+    if (typeof msg.error === "string") {
+      drop(sock, `rejected: ${msg.error}`);
       return;
     }
     const ch = subscriptions.find((c) => c === msg.channel);
@@ -110,7 +116,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     armIdle();
     sock.onopen = () => subscribe(sock, 0);
     sock.onmessage = (ev) => {
-      if (typeof ev.data === "string") receive(ev.data);
+      if (typeof ev.data === "string") receive(sock, ev.data);
       else log("skipped message: non-text frame");
     };
     sock.onclose = () => drop(sock, "closed");

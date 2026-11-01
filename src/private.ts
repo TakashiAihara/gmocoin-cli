@@ -41,7 +41,12 @@ export type Client = {
   post(path: string, body: Record<string, unknown>): Promise<unknown>;
 };
 
-export function createClient(opts: { baseUrl: string; credentials: Credentials }): Client {
+export function createClient(opts: {
+  baseUrl: string;
+  credentials: Credentials;
+  timeoutMs?: number;
+}): Client {
+  const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const base = opts.baseUrl.replace(/\/+$/, "");
 
   // 1 回の呼び出しで 1 リクエストだけ送り、打ち直さない (発注の二重を避ける。打ち直すかは呼ぶ側)
@@ -60,7 +65,7 @@ export function createClient(opts: { baseUrl: string; credentials: Credentials }
         ...(method === "POST" ? { "Content-Type": "application/json" } : {}),
       },
       ...(method === "POST" ? { body } : {}),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
     let json: { status?: unknown; data?: unknown; messages?: unknown };

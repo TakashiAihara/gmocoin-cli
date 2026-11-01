@@ -88,7 +88,7 @@ gmocoin stream                         # BTC trades
 gmocoin stream --channel orderbooks    # BTC order books
 ```
 
-Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. Trades that arrive while reconnecting are lost.
+Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A rejected subscribe (such as `ERR-5003 Request too many.`) is treated as a drop, so every channel is subscribed again. Trades that arrive while reconnecting are lost.
 
 ## Private API
 
@@ -103,7 +103,7 @@ gmocoin orders                                      # active orders
 gmocoin executions --order-id 123456789             # fills of one order, timestamps in ms
 ```
 
-- `--symbol` defaults to `BTC`. Sizes and prices are sent as written. `--post-only` sends `timeInForce=SOK`.
+- `--symbol` defaults to `BTC`. `order` takes spot symbols only (no `_`, so not leverage symbols such as `BTC_JPY`). Sizes and prices are sent as written. `--post-only` sends `timeInForce=SOK`.
 - stdout is one JSON value. Prices, sizes and fees are numbers; ids are strings. An active market order has `price: null`.
 - `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; check with `orders` or `executions`.
 - Exit codes: 2 when the key or secret is missing (nothing is sent), 4 when the exchange rejects the request (stderr has `{"status":<n>,"messages":[{"message_code":"ERR-...","message_string":"..."}]}`), 1 for a network failure or an unexpected response.

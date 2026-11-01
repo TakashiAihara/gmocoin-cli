@@ -395,11 +395,17 @@ async function runPrivate(call: (client: Client) => Promise<unknown>) {
   }
 }
 
-// 数量・値段は書かれた文字列のまま送る (数値に直すと 0.0001 が 1e-4 になりうる)
+// 数量・値段は書かれた文字列のまま送る (数値に直すと 1e-7 未満が指数表記になり、大きな値は桁が丸まる)
 function parseDecimal(v: string): string {
   if (!/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0) {
     throw new InvalidArgumentError(`must be a positive decimal: ${v}`);
   }
+  return v;
+}
+
+// GMO のレバレッジの銘柄は BTC_JPY のように _ を含む。発注は現物だけに限る (soba live.md の範囲)
+function parseSpotSymbol(v: string): string {
+  if (!/^[A-Z0-9]+$/.test(v)) throw new InvalidArgumentError("order supports spot symbols only");
   return v;
 }
 
@@ -415,7 +421,10 @@ function parseOrderType(v: string): "market" | "limit" {
 }
 
 function parseOrderId(v: string): string {
-  if (!/^\d+$/.test(v)) throw new InvalidArgumentError(`not an order id: ${v}`);
+  // cancel は数値で送るので、Number で丸まる ID は別の注文を指しうる
+  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) {
+    throw new InvalidArgumentError(`not an order id: ${v}`);
+  }
   return v;
 }
 
@@ -453,7 +462,7 @@ program
 program
   .command("order")
   .description("place one order and print its orderId (Private API, never retried)")
-  .option("--symbol <symbol>", "symbol to trade", parseSymbol, "BTC")
+  .option("--symbol <symbol>", "spot symbol to trade", parseSpotSymbol, "BTC")
   .requiredOption("--side <side>", "BUY or SELL", parseSide)
   .requiredOption("--type <type>", "market or limit", parseOrderType)
   .requiredOption("--size <n>", "order size", parseDecimal)

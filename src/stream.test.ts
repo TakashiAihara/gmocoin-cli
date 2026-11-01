@@ -136,3 +136,16 @@ test("trades of another symbol or with a broken timestamp are skipped", async ()
   expect(events.map((e) => (e.kind === "trade" ? e.price : 0))).toEqual([15000080]);
   expect(logs.filter((l) => l.startsWith("skipped message")).length).toBe(2);
 });
+
+test("a rejected subscribe drops the connection and subscribes again", async () => {
+  const { events, logs } = start();
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+  await waitFor(() => fake!.received.length === 4);
+  expect(fake!.opened).toBe(2);
+  expect(logs).toContain(
+    "disconnected: rejected: ERR-5003 Request too many., reconnecting in 20ms",
+  );
+  fake!.send(trade("15000090"));
+  await waitFor(() => events.length === 1);
+});
