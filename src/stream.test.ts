@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { MarketEvent } from "./backtest.ts";
-import type { Gap } from "./stream.ts";
+import type { Alive, Gap } from "./stream.ts";
 import { startStream } from "./stream.ts";
 import { startFakeServer, waitFor, type FakeServer } from "./test-helpers.ts";
 
@@ -34,7 +34,7 @@ const book = JSON.stringify({
 
 function start(opts: { idleTimeoutMs?: number } = {}) {
   fake = startFakeServer();
-  const events: (MarketEvent | Gap)[] = [];
+  const events: (MarketEvent | Gap | Alive)[] = [];
   const logs: string[] = [];
   stream = startStream({
     url: fake.url,
@@ -185,7 +185,7 @@ test("one gap line spans repeated drops, from the first drop to the first messag
 
 test("--channel orderbooks subscribes books only and emits them", async () => {
   fake = startFakeServer();
-  const events: (MarketEvent | Gap)[] = [];
+  const events: (MarketEvent | Gap | Alive)[] = [];
   stream = startStream({
     url: fake.url,
     symbol: "BTC",
@@ -385,4 +385,89 @@ test("a broken book on the last channel does not reset the backoff", async () =>
   reject();
   await waitFor(() => reconnects().length === 2);
   expect(reconnects()[1]).toContain("reconnecting in 40ms");
+});
+
+function startAlive(opts: { aliveIntervalMs: number; aliveWindowMs: number }) {
+  fake = startFakeServer();
+  const events: (MarketEvent | Gap | Alive)[] = [];
+  stream = startStream({
+    url: fake.url,
+    symbol: "BTC",
+    channel: "trades",
+    onEvent: (e) => events.push(e),
+    subscribeIntervalMs: 20,
+    backoffInitialMs: 20,
+    log: () => {},
+    ...opts,
+  });
+  const alives = () => events.filter((e) => e.kind === "alive") as Alive[];
+  return { events, alives };
+}
+
+test("alive lines come at each interval only while messages arrive within the window", async () => {
+  const { alives } = startAlive({ aliveIntervalMs: 50, aliveWindowMs: 120 });
+  await waitFor(() => fake!.received.length === 2);
+  // まだ何も受け取っていない: 出ない
+  await Bun.sleep(130);
+  expect(alives()).toEqual([]);
+
+  const before = Date.now();
+  fake!.send(book);
+  await Bun.sleep(130);
+  const during = alives().length;
+  expect(during).toBeGreaterThanOrEqual(2);
+  expect(alives()[0]!.t).toBeGreaterThanOrEqual(before);
+  // 板は 1 つしか送っていないので、t が受け取った時刻なら 2 行目も同じ値になる
+  expect(alives()[1]!.t).toBeGreaterThan(alives()[0]!.t);
+
+  // 窓 (120ms) を過ぎて何も来なければ止まる。受け取りは送った後なので、どの alive も
+  // 送った時刻 + 窓 + 届くまでの遅れ (余裕 30ms) の内にある
+  await Bun.sleep(150);
+  const settled = alives().length;
+  await Bun.sleep(150);
+  expect(alives().length).toBe(settled);
+  expect(alives().every((a) => a.t <= before + 120 + 30)).toBe(true);
+});
+
+test("alive lines stop as soon as the connection drops, and resume after data returns", async () => {
+  const { alives, events } = startAlive({ aliveIntervalMs: 40, aliveWindowMs: 10_000 });
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(book);
+  await waitFor(() => alives().length >= 1);
+
+  const atDrop = alives().length;
+  const eventsAtDrop = events.length;
+  fake!.closeConn();
+  await waitFor(() => fake!.received.length === 4);
+  // 切れてから繋ぎ直し、まだ何も受け取っていない間: 窓 (10 秒) の内でも出ない
+  await Bun.sleep(150);
+  expect(alives().length).toBe(atDrop);
+
+  fake!.send(book);
+  await waitFor(() => alives().length > atDrop);
+  // 切れた後の行は gap が先で、alive はその後
+  const after = events.slice(eventsAtDrop).map((e) => e.kind);
+  expect(after[0]).toBe("gap");
+  expect(after.slice(1).every((k) => k === "alive")).toBe(true);
+});
+
+test("stop ends the alive lines", async () => {
+  const { alives } = startAlive({ aliveIntervalMs: 30, aliveWindowMs: 10_000 });
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(book);
+  await waitFor(() => alives().length >= 1);
+  stream!.stop();
+  const n = alives().length;
+  await Bun.sleep(120);
+  expect(alives().length).toBe(n);
+});
+
+test("malformed frames do not produce alive lines", async () => {
+  const { alives } = startAlive({ aliveIntervalMs: 30, aliveWindowMs: 10_000 });
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(brokenBook);
+  fake!.send(trade("1").replace('"BTC"', '"ETH"'));
+  fake!.send("not json");
+  await Bun.sleep(150);
+  expect(alives()).toEqual([]);
 });
