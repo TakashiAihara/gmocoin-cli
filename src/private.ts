@@ -113,8 +113,12 @@ function id(v: unknown, field: string): string {
 }
 
 function list(data: unknown): Record<string, unknown>[] {
-  // 0 件のときは list を持たない data ({}) が返る
-  const l = (data as { list?: unknown } | undefined)?.list;
+  // 0 件のときは list を持たない data ({}) が返る。data そのものが欠けた応答を 0 件と読まない
+  // (呼ぶ側は「約定なし」と読んで打ち直し、二重発注になる)
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error(`unexpected data: ${JSON.stringify(data)}`);
+  }
+  const l = (data as { list?: unknown }).list;
   if (l === undefined) return [];
   if (!Array.isArray(l)) throw new Error(`unexpected list: ${JSON.stringify(l)}`);
   return l as Record<string, unknown>[];
@@ -178,8 +182,8 @@ export async function activeOrders(client: Client, symbol: string) {
     clientOrderId: clientOrderIdOf(o.clientOrderId),
     side: id(o.side, "side"),
     type: id(o.executionType, "executionType").toLowerCase(),
-    // 成行の注文は price を持たない
-    price: o.price === undefined ? null : num(o.price, "price"),
+    // 成行の注文に値段は無い (price を持たない・null・"0" のどれで来ても null にする)
+    price: o.executionType === "MARKET" ? null : num(o.price, "price"),
     size: num(o.size, "size"),
     executedSize: num(o.executedSize, "executedSize"),
     status: id(o.status, "status"),

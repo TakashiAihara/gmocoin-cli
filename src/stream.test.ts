@@ -114,7 +114,9 @@ test("gmocoin stream prints trades as JSONL on stdout", async () => {
     fake.send(trade("15000070"));
     const reader = p.stdout.getReader();
     const { value } = await reader.read();
-    expect(JSON.parse(new TextDecoder().decode(value).trim())).toEqual({
+    const text = new TextDecoder().decode(value);
+    expect(text.endsWith("}\n")).toBe(true);
+    expect(JSON.parse(text)).toEqual({
       kind: "trade",
       t: Date.parse("2026-11-01T00:00:00.123Z"),
       side: "BUY",
@@ -179,4 +181,123 @@ test("one gap line spans repeated drops, from the first drop to the first messag
   expect(gap.since).toBeGreaterThanOrEqual(beforeDrop);
   expect(gap.since).toBeLessThan(beforeSecondDrop);
   expect(gap.t).toBeGreaterThanOrEqual(beforeMessage);
+});
+
+test("--channel orderbooks subscribes books only and emits them", async () => {
+  fake = startFakeServer();
+  const events: (MarketEvent | Gap)[] = [];
+  stream = startStream({
+    url: fake.url,
+    symbol: "BTC",
+    channel: "orderbooks",
+    onEvent: (e) => events.push(e),
+    subscribeIntervalMs: 20,
+    log: () => {},
+  });
+  await waitFor(() => fake!.received.length === 1);
+  await Bun.sleep(60);
+  expect(fake.received.map((r) => JSON.parse(r.text))).toEqual([
+    { command: "subscribe", channel: "orderbooks", symbol: "BTC" },
+  ]);
+  fake.send(book);
+  await waitFor(() => events.length === 1);
+  expect(events[0]).toEqual({
+    kind: "book",
+    t: Date.parse("2026-11-01T00:00:00.100Z"),
+    asks: [{ price: 15000100, size: 0.1 }],
+    bids: [{ price: 15000000, size: 0.2 }],
+  });
+});
+
+test("repeated rate-limit rejections back off, doubling each time", async () => {
+  const { logs } = start();
+  for (const n of [2, 4]) {
+    await waitFor(() => fake!.received.length === n);
+    fake!.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+  }
+  await waitFor(() => fake!.received.length === 6);
+  expect(logs.filter((l) => l.includes("reconnecting"))).toEqual([
+    "disconnected: rejected: ERR-5003 Request too many., reconnecting in 20ms",
+    "disconnected: rejected: ERR-5003 Request too many., reconnecting in 40ms",
+  ]);
+});
+
+test("a trade before the last subscribe is sent does not reset the backoff", async () => {
+  fake = startFakeServer();
+  const logs: string[] = [];
+  stream = startStream({
+    url: fake.url,
+    symbol: "BTC",
+    channel: "trades",
+    onEvent: () => {},
+    subscribeIntervalMs: 300,
+    backoffInitialMs: 20,
+    log: (l) => logs.push(l),
+  });
+  // 1 回目: 2 つとも送った後に拒否 → 20ms。2 回目: trades だけ送った時点で約定、続いて拒否
+  await waitFor(() => fake!.received.length === 2, 2000);
+  fake.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+  await waitFor(() => fake!.received.length === 3, 2000);
+  fake.send(trade("15000000"));
+  await Bun.sleep(20);
+  fake.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+  await waitFor(() => logs.filter((l) => l.includes("reconnecting")).length === 2, 2000);
+  expect(logs.filter((l) => l.includes("reconnecting"))[1]).toContain("reconnecting in 40ms");
+});
+
+test("a rejection other than rate limiting stops the stream as fatal", async () => {
+  fake = startFakeServer();
+  const fatal: string[] = [];
+  stream = startStream({
+    url: fake.url,
+    symbol: "XYZ",
+    channel: "trades",
+    onEvent: () => {},
+    subscribeIntervalMs: 20,
+    backoffInitialMs: 20,
+    log: () => {},
+    onFatal: (e) => fatal.push(e.message),
+  });
+  await waitFor(() => fake!.received.length === 1);
+  fake.send(JSON.stringify({ error: "ERR-5106 Invalid request parameter. symbol" }));
+  await waitFor(() => fatal.length === 1);
+  await waitFor(() => fake!.closed === 1);
+  await Bun.sleep(100);
+  expect(fatal).toEqual(["subscribe rejected: ERR-5106 Invalid request parameter. symbol"]);
+  expect(fake.opened).toBe(1);
+});
+
+test("frames that are not JSON objects, or trades with empty numbers, are skipped", async () => {
+  const { events, logs } = start();
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send("null");
+  fake!.send("[1]");
+  fake!.send(trade("").replace('"size":"0.001"', '"size":""'));
+  fake!.send(trade("15000010"));
+  await waitFor(() => events.length >= 1);
+  await Bun.sleep(50);
+  expect(events.map((e) => (e.kind === "trade" ? e.price : 0))).toEqual([15000010]);
+  expect(logs.filter((l) => l.startsWith("skipped message")).length).toBe(3);
+});
+
+test("gmocoin stream exits 1 on a rejection that reconnecting cannot fix", async () => {
+  fake = startFakeServer();
+  const p = Bun.spawn(["bun", join(import.meta.dir, "cli.ts"), "stream", "--symbol", "XYZ"], {
+    env: { ...process.env, GMOCOIN_PUBLIC_WS_URL: fake.url },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  try {
+    await waitFor(() => fake!.received.length === 1, 5000);
+    fake.send(JSON.stringify({ error: "ERR-5106 Invalid request parameter. symbol" }));
+    const [stderr, code] = await Promise.race([
+      Promise.all([new Response(p.stderr).text(), p.exited]),
+      Bun.sleep(5000).then(() => ["", "still running"] as const),
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("subscribe rejected: ERR-5106");
+  } finally {
+    p.kill();
+    await p.exited;
+  }
 });

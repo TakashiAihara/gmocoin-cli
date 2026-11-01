@@ -17,6 +17,8 @@ export type StreamOptions = {
   backoffMaxMs?: number;
   idleTimeoutMs?: number;
   log?: (line: string) => void;
+  // 繋ぎ直しても直らない拒否 (存在しない銘柄など)。呼ぶ側が止まる
+  onFatal?: (err: Error) => void;
 };
 
 export function startStream(opts: StreamOptions): { stop(): void } {
@@ -31,6 +33,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     idleTimeoutMs = 60_000,
     log = (line: string) => console.error(line),
   } = opts;
+  const onFatal = opts.onFatal ?? ((err: Error) => log(`fatal: ${err.message}`));
 
   // 約定だけだと閑散時に 90 秒届かないことがあり、無通信の判定が正常な接続を切る (issue #3)。
   // 板 (約 1.8 件/秒) も購読して生存の印にし、出すのは指定の channel だけにする
@@ -39,6 +42,8 @@ export function startStream(opts: StreamOptions): { stop(): void } {
   let ws: WebSocket | undefined;
   let stopped = false;
   let backoff = backoffInitialMs;
+  // この接続で送った購読の数。全部送り終えるまでは backoff を戻さない (後の購読が拒否されうる)
+  let sent = 0;
   // 繋ぎ直しが続いても、印は最初に切れた時刻から 1 つだけ出す
   let gapSince: number | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -76,31 +81,49 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     if (!ch) return;
     const option = ch === "trades" ? { option: "TAKER_ONLY" } : {};
     sock.send(JSON.stringify({ command: "subscribe", channel: ch, symbol, ...option }));
+    sent = i + 1;
     // 購読は 1 秒に 1 回まで (超えると購読が拒否される)
     subscribeTimer = setTimeout(() => subscribe(sock, i + 1), subscribeIntervalMs);
   }
 
   function receive(sock: WebSocket, text: string) {
-    let msg: { channel?: unknown; symbol?: unknown; timestamp?: unknown; error?: unknown };
+    const skip = (why: string) =>
+      log(`skipped message${why}: ${text.slice(0, 200).replace(/[\r\n]/g, " ")}`);
+    let parsed: unknown;
     try {
-      msg = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
-      log(`skipped message: ${text.slice(0, 200).replace(/[\r\n]/g, " ")}`);
+      skip("");
       return;
     }
-    // 購読の拒否 (ERR-5003 Request too many 等) は、板が届き続けると約定だけ黙って止まる。
-    // 繋ぎ直して全部購読し直す
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      skip("");
+      return;
+    }
+    const msg = parsed as {
+      channel?: unknown;
+      symbol?: unknown;
+      timestamp?: unknown;
+      error?: unknown;
+    };
+    // 購読の拒否。ERR-5003 (Request too many) は板が届き続けると約定だけ黙って止まるので、
+    // 繋ぎ直して全部購読し直す。他 (ERR-5106 Invalid request parameter 等) は繋ぎ直しても直らない
     if (typeof msg.error === "string") {
-      drop(sock, `rejected: ${msg.error}`);
+      if (msg.error.startsWith("ERR-5003")) {
+        drop(sock, `rejected: ${msg.error}`);
+        return;
+      }
+      stop();
+      onFatal(new Error(`subscribe rejected: ${msg.error}`));
       return;
     }
     const ch = subscriptions.find((c) => c === msg.channel);
     if (!ch || msg.symbol !== symbol) {
-      log(`skipped message: ${text.slice(0, 200).replace(/[\r\n]/g, " ")}`);
+      skip("");
       return;
     }
     armIdle();
-    backoff = backoffInitialMs;
+    if (sent === subscriptions.length) backoff = backoffInitialMs;
     if (gapSince !== undefined) {
       onEvent({ kind: "gap", t: Date.now(), since: gapSince });
       gapSince = undefined;
@@ -113,7 +136,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
       if (!Number.isFinite(t)) throw new Error("bad timestamp");
       event = toMarketEvent(ch, msg, t);
     } catch (err) {
-      log(`skipped message (${(err as Error).message}): ${text.slice(0, 200)}`);
+      skip(` (${(err as Error).message})`);
       return;
     }
     onEvent(event);
@@ -133,16 +156,16 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     sock.onerror = () => drop(sock, "error");
   }
 
+  function stop() {
+    stopped = true;
+    clearTimeout(idleTimer);
+    clearTimeout(subscribeTimer);
+    clearTimeout(reconnectTimer);
+    if (ws) closeSocket(ws);
+    ws = undefined;
+  }
+
   connect();
 
-  return {
-    stop() {
-      stopped = true;
-      clearTimeout(idleTimer);
-      clearTimeout(subscribeTimer);
-      clearTimeout(reconnectTimer);
-      if (ws) closeSocket(ws);
-      ws = undefined;
-    },
-  };
+  return { stop };
 }

@@ -395,7 +395,7 @@ async function runPrivate(call: (client: Client) => Promise<unknown>) {
   }
 }
 
-// 数量・値段は書かれた文字列のまま送る (数値に直すと 1e-7 未満が指数表記になり、大きな値は桁が丸まる)
+// 数量・値段は書かれた文字列のまま送る (数値に直すと 1e-6 未満が指数表記になり、大きな値は桁が丸まる)
 function parseDecimal(v: string): string {
   if (!/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0) {
     throw new InvalidArgumentError(`must be a positive decimal: ${v}`);
@@ -430,7 +430,8 @@ function parseOrderType(v: string): "market" | "limit" {
 
 function parseOrderId(v: string): string {
   // cancel は数値で送るので、Number で丸まる ID は別の注文を指しうる
-  if (!/^\d+$/.test(v) || !Number.isSafeInteger(Number(v))) {
+  // 先頭のゼロは数値にすると落ちて、表示と送る ID が食い違う
+  if (!/^[1-9]\d*$/.test(v) || !Number.isSafeInteger(Number(v))) {
     throw new InvalidArgumentError(`not an order id: ${v}`);
   }
   return v;
@@ -453,6 +454,10 @@ program
       symbol: opts.symbol,
       channel: opts.channel,
       onEvent: (e) => process.stdout.write(JSON.stringify(e) + "\n"),
+      onFatal: (err) => {
+        console.error(err.message);
+        process.exit(1);
+      },
     });
     const exit = () => {
       stream.stop();

@@ -66,8 +66,9 @@ export async function ensureCsv(opts: {
   return path;
 }
 
-function num(v: string): number {
-  const n = Number(v);
+// 値は文字列で届く。Number("") や Number(null) は 0 になるので、文字列以外と空は数値と認めない
+function num(v: unknown): number {
+  const n = typeof v === "string" && v !== "" ? Number(v) : NaN;
   if (!Number.isFinite(n)) throw new Error(`not a number: ${JSON.stringify(v)}`);
   return n;
 }

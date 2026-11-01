@@ -34,7 +34,12 @@ function fakePrivate(respond: (r: Req) => Response | object) {
         path,
         query: url.search,
         body,
-        signOk: req.headers.get("API-KEY") === KEY && req.headers.get("API-SIGN") === expected,
+        // 本物は ms の時刻で署名を検証し、POST は JSON として読む
+        signOk:
+          req.headers.get("API-KEY") === KEY &&
+          req.headers.get("API-SIGN") === expected &&
+          /^\d{13}$/.test(ts) &&
+          (req.method !== "POST" || req.headers.get("Content-Type") === "application/json"),
       };
       reqs.push(r);
       const out = respond(r);
@@ -174,6 +179,8 @@ test("cancel sends the order id as a number and prints it back", async () => {
   const r = await run(["cancel", "123456789"], api.url);
   expect(r.code).toBe(0);
   expect(JSON.parse(r.stdout)).toEqual({ orderId: "123456789" });
+  expect(api.reqs.length).toBe(1);
+  expect(api.reqs[0]!.method).toBe("POST");
   expect(api.reqs[0]!.path).toBe("/v1/cancelOrder");
   expect(api.reqs[0]!.signOk).toBe(true);
   expect(JSON.parse(api.reqs[0]!.body)).toEqual({ orderId: 123456789 });
@@ -266,6 +273,9 @@ test("executions prints the fills of the order with ms timestamps", async () => 
       timestamp: Date.parse("2026-11-01T02:15:06.081Z"),
     },
   ]);
+  expect(api.reqs.length).toBe(1);
+  expect(api.reqs[0]!.method).toBe("GET");
+  expect(api.reqs[0]!.path).toBe("/v1/executions");
   expect(api.reqs[0]!.query).toBe("?orderId=123456789");
   expect(api.reqs[0]!.signOk).toBe(true);
 });
@@ -400,7 +410,7 @@ test("a leverage symbol is refused for order before anything is sent", async () 
   expect(api.reqs.length).toBe(0);
 });
 
-for (const id of ["abc", "1e3", "9007199254740993"]) {
+for (const id of ["abc", "1e3", "0", "0123", "9007199254740993"]) {
   test(`cancel ${id} is refused before anything is sent`, async () => {
     const api = fakePrivate(() => ok());
     const r = await run(["cancel", id], api.url);
@@ -490,3 +500,54 @@ test("orders carries the client order id when the exchange returns one", async (
   expect(r.code).toBe(0);
   expect(JSON.parse(r.stdout)[0].clientOrderId).toBe("soba43");
 });
+
+test("a limit order without --post-only sends no timeInForce", async () => {
+  const api = fakePrivate(() => ok("637002"));
+  const r = await run(
+    [
+      "order",
+      "--client-order-id",
+      "c1",
+      "--side",
+      "BUY",
+      "--type",
+      "limit",
+      "--size",
+      "0.001",
+      "--price",
+      "14000000",
+    ],
+    api.url,
+  );
+  expect(r.code).toBe(0);
+  expect(api.reqs.length).toBe(1);
+  expect(JSON.parse(api.reqs[0]!.body)).toEqual({
+    symbol: "BTC",
+    side: "BUY",
+    executionType: "LIMIT",
+    size: "0.001",
+    clientOrderId: "c1",
+    price: "14000000",
+  });
+});
+
+for (const data of [undefined, null, [], "x"]) {
+  test(`executions with data ${JSON.stringify(data)} exits 1 instead of printing []`, async () => {
+    const api = fakePrivate(() => ({ status: 0, ...(data === undefined ? {} : { data }) }));
+    const r = await run(["executions", "--order-id", "1"], api.url);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("unexpected data");
+  });
+}
+
+for (const price of ["0", null]) {
+  test(`an active market order with price ${JSON.stringify(price)} prints price null`, async () => {
+    const api = fakePrivate(() =>
+      ok({ list: [{ ...activeOrder(6), executionType: "MARKET", price }] }),
+    );
+    const r = await run(["orders"], api.url);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)[0]).toMatchObject({ orderId: "6", type: "market", price: null });
+  });
+}

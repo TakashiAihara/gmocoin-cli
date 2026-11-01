@@ -88,7 +88,7 @@ gmocoin stream                         # BTC trades
 gmocoin stream --channel orderbooks    # BTC order books
 ```
 
-Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A rejected subscribe (such as `ERR-5003 Request too many.`) is treated as a drop, so every channel is subscribed again. Trades that arrive while reconnecting are lost; the first message after a reconnect is preceded by one line `{"kind":"gap","t":<ms>,"since":<ms>}`, where `since` is when the drop was noticed and `t` is when data came back.
+Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A subscribe rejected for rate limiting (`ERR-5003 Request too many.`) is treated as a drop, so every channel is subscribed again; any other rejection (such as `ERR-5106` for an unknown symbol) exits 1, since reconnecting cannot fix it. Trades that arrive while reconnecting are lost; the first message after a reconnect is preceded by one line `{"kind":"gap","t":<ms>,"since":<ms>}`, where `since` is when the drop was noticed and `t` is when data came back.
 
 ## Private API
 
