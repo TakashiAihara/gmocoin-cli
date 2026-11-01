@@ -3,7 +3,7 @@ CLI for the GMO Coin API (market data recording, backtesting, trading)
 
 ## Status
 
-- `record`, `backtest` and `replay` work. Placing orders is not implemented yet, and no command needs an API key.
+- `record`, `backtest`, `replay` and `stream` work without an API key. `balance`, `order`, `cancel`, `orders` and `executions` call the Private API; they are tested against a fake server, and have not yet been run against a real account.
 - This is an unofficial tool, not affiliated with GMO Coin. Backtest results are not investment advice.
 
 ## Install
@@ -78,6 +78,36 @@ gmocoin replay --source record --data /srv/gmocoin --from 2026-10-12 --to 2026-1
 ```
 
 Each line is `{"kind":"trade","t":<ms>,"side":"BUY"|"SELL","price":<n>,"size":<n>}` or `{"kind":"book","t":<ms>,"asks":[{"price":<n>,"size":<n>}],"bids":[...]}`. A range with no data exits 3; other failures exit 1. The spec is in `docs/design/replay.md`.
+
+## stream
+
+Prints live public WebSocket trades as JSONL on stdout, in the same format as `replay`, until it is stopped. No API key is needed.
+
+```sh
+gmocoin stream                         # BTC trades
+gmocoin stream --channel orderbooks    # BTC order books
+```
+
+Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A rejected subscribe is treated as a drop, so every channel is subscribed again, except `ERR-5106` (invalid symbol or channel), which exits 1 because reconnecting cannot fix it. Trades that arrive while reconnecting are lost; the first message after a reconnect is preceded by one line `{"kind":"gap","t":<ms>,"since":<ms>}`, where `since` is when the drop was noticed and `t` is when data came back.
+
+## Private API
+
+`balance`, `order`, `cancel`, `orders` and `executions` call the GMO Coin Private API. The key and secret are read from `GMOCOIN_API_KEY` and `GMOCOIN_API_SECRET`; `GMOCOIN_PRIVATE_API_URL` overrides the endpoint (default `https://api.coin.z.com/private`). The output contract is the one `soba` depends on (soba `docs/design/live.md`).
+
+```sh
+gmocoin balance                                     # [{"symbol":"JPY","amount":10000,"available":10000},...]
+gmocoin order --client-order-id a1 --side BUY --type market --size 0.001   # {"orderId":"..."}
+gmocoin order --client-order-id a2 --side SELL --type limit --size 0.001 --price 15000000 --post-only
+gmocoin cancel 123456789                            # {"orderId":"123456789"}
+gmocoin orders                                      # active orders
+gmocoin executions --order-id 123456789             # fills of one order, timestamps in ms
+gmocoin executions --client-order-id a1             # the same, by the id the caller chose
+```
+
+- `--symbol` defaults to `BTC`. `order` takes spot symbols only (no `_`, so not leverage symbols such as `BTC_JPY`). Sizes and prices are sent as written. `--post-only` sends `timeInForce=SOK`.
+- stdout is one JSON value. Prices, sizes and fees are numbers; ids are strings. An active market order has `price: null`.
+- `order` requires `--client-order-id` (1 to 36 letters or digits, unique in the account). A reused id is refused with `ERR-915` (exit 4), which means an order with that id already exists; an id whose order was rejected may be reused (GMO API docs, `/v1/order`). `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; look it up with `executions --client-order-id` and `orders` (which carries `clientOrderId`).
+- Exit codes: 2 when the key or secret is missing (nothing is sent), 4 when the exchange rejects the request (stderr has `{"status":<n>,"messages":[{"message_code":"ERR-...","message_string":"..."}]}`), 1 for a network failure or an unexpected response.
 
 ## Develop
 

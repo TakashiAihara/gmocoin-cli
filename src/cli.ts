@@ -16,7 +16,21 @@ import {
   ensureCsv,
   recordEvents,
 } from "./market-data.ts";
+import {
+  activeOrders,
+  balance,
+  cancel,
+  type Client,
+  createClient,
+  credentialsFromEnv,
+  CredentialsError,
+  DEFAULT_PRIVATE_API_URL,
+  ExchangeError,
+  executions,
+  order,
+} from "./private.ts";
 import { CHANNELS, DEFAULT_PUBLIC_WS_URL, startRecorder, type Channel } from "./record.ts";
+import { startStream } from "./stream.ts";
 
 function collect<T>(parse: (v: string) => T) {
   return (value: string, prev: T[] = []) => [...prev, parse(value)];
@@ -351,6 +365,180 @@ program
       console.error(err instanceof Error ? err.message : err);
       process.exit(1);
     }
+  });
+
+// exit code は soba の docs/design/live.md の契約。2 = キーが無い (何も送っていない)、
+// 4 = 取引所の拒否 (stderr に応答そのもの)、1 = 通信の失敗・想定外の応答 (送ったかは分からない)
+const EXIT_NO_CREDENTIALS = 2;
+const EXIT_EXCHANGE_ERROR = 4;
+
+async function runPrivate(call: (client: Client) => Promise<unknown>) {
+  let client: Client;
+  try {
+    client = createClient({
+      baseUrl: process.env.GMOCOIN_PRIVATE_API_URL || DEFAULT_PRIVATE_API_URL,
+      credentials: credentialsFromEnv(process.env),
+    });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(err instanceof CredentialsError ? EXIT_NO_CREDENTIALS : 1);
+  }
+  try {
+    console.log(JSON.stringify(await call(client)));
+  } catch (err) {
+    if (err instanceof ExchangeError) {
+      console.error(JSON.stringify({ status: err.status, messages: err.messages }));
+      process.exit(EXIT_EXCHANGE_ERROR);
+    }
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+}
+
+// 数量・値段は書かれた文字列のまま送る (数値に直すと 1e-6 未満が指数表記になり、大きな値は桁が丸まる)
+function parseDecimal(v: string): string {
+  if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(v) || Number(v) <= 0) {
+    throw new InvalidArgumentError(`must be a positive decimal: ${v}`);
+  }
+  return v;
+}
+
+// GMO のレバレッジの銘柄は BTC_JPY のように _ を含む。発注は現物だけに限る (soba live.md の範囲)
+function parseSpotSymbol(v: string): string {
+  if (!/^[A-Z0-9]+$/.test(v)) throw new InvalidArgumentError("order supports spot symbols only");
+  return v;
+}
+
+// GMO の制約: 36 文字以内の半角英数字
+function parseClientOrderId(v: string): string {
+  if (!/^[A-Za-z0-9]{1,36}$/.test(v)) {
+    throw new InvalidArgumentError("client order id must be 1 to 36 letters or digits");
+  }
+  return v;
+}
+
+function parseSide(v: string): "BUY" | "SELL" {
+  if (v !== "BUY" && v !== "SELL") throw new InvalidArgumentError("side must be BUY or SELL");
+  return v;
+}
+
+function parseOrderType(v: string): "market" | "limit" {
+  if (v !== "market" && v !== "limit")
+    throw new InvalidArgumentError("type must be market or limit");
+  return v;
+}
+
+function parseOrderId(v: string): string {
+  // cancel は数値で送るので、Number で丸まる ID は別の注文を指しうる
+  // 先頭のゼロは数値にすると落ちて、表示と送る ID が食い違う
+  if (!/^[1-9]\d*$/.test(v) || !Number.isSafeInteger(Number(v))) {
+    throw new InvalidArgumentError(`not an order id: ${v}`);
+  }
+  return v;
+}
+
+program
+  .command("stream")
+  .description("print live Public WebSocket trades (or books) as JSONL in the replay format")
+  .option("--symbol <symbol>", "symbol to stream", parseSymbol, "BTC")
+  .option("--channel <channel>", "trades or orderbooks", parseChannel, "trades")
+  .action((opts: { symbol: string; channel: Channel }) => {
+    // 読む側が閉じた (EPIPE) のは読む側が止めると決めたこと。失敗にしない
+    process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") process.exit(0);
+      console.error(err.message);
+      process.exit(1);
+    });
+    const stream = startStream({
+      url: process.env.GMOCOIN_PUBLIC_WS_URL || DEFAULT_PUBLIC_WS_URL,
+      symbol: opts.symbol,
+      channel: opts.channel,
+      onEvent: (e) => process.stdout.write(JSON.stringify(e) + "\n"),
+      onFatal: (err) => {
+        console.error(err.message);
+        process.exit(1);
+      },
+    });
+    const exit = () => {
+      stream.stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", exit);
+    process.on("SIGTERM", exit);
+  });
+
+program
+  .command("balance")
+  .description("print the account's assets as JSON (Private API)")
+  .action(() => runPrivate(balance));
+
+program
+  .command("order")
+  .description("place one order and print its orderId (Private API, never retried)")
+  .option("--symbol <symbol>", "spot symbol to trade", parseSpotSymbol, "BTC")
+  .requiredOption("--side <side>", "BUY or SELL", parseSide)
+  .requiredOption("--type <type>", "market or limit", parseOrderType)
+  .requiredOption("--size <n>", "order size", parseDecimal)
+  .option("--price <n>", "limit price, limit orders only", parseDecimal)
+  .option("--post-only", "cancel instead of taking (timeInForce=SOK), limit orders only")
+  .requiredOption(
+    "--client-order-id <id>",
+    "caller-chosen unique id, used to find the order when the result is unknown",
+    parseClientOrderId,
+  )
+  .action(
+    (opts: {
+      symbol: string;
+      side: "BUY" | "SELL";
+      type: "market" | "limit";
+      size: string;
+      price?: string;
+      postOnly?: boolean;
+      clientOrderId: string;
+    }) => {
+      if (opts.type === "limit" && opts.price === undefined) {
+        program.error("--price is required for limit orders");
+      }
+      if (opts.type === "market" && (opts.price !== undefined || opts.postOnly)) {
+        program.error("--price and --post-only are for limit orders only");
+      }
+      return runPrivate((client) => order(client, opts));
+    },
+  );
+
+program
+  .command("cancel")
+  .description("cancel one order and print its orderId (Private API, never retried)")
+  .argument("<orderId>", "order to cancel", parseOrderId)
+  .action((orderId: string) => runPrivate((client) => cancel(client, orderId)));
+
+program
+  .command("orders")
+  .description("print the active (unfilled) orders as JSON (Private API)")
+  .option("--symbol <symbol>", "symbol", parseSymbol, "BTC")
+  .action((opts: { symbol: string }) => runPrivate((client) => activeOrders(client, opts.symbol)));
+
+program
+  .command("executions")
+  .description("print the fills of one order as JSON (Private API)")
+  .option("--order-id <id>", "order whose fills to print", parseOrderId)
+  .option(
+    "--client-order-id <id>",
+    "the --client-order-id the order was placed with",
+    parseClientOrderId,
+  )
+  .action((opts: { orderId?: string; clientOrderId?: string }) => {
+    if ((opts.orderId === undefined) === (opts.clientOrderId === undefined)) {
+      program.error("give exactly one of --order-id and --client-order-id");
+    }
+    return runPrivate((client) =>
+      executions(
+        client,
+        opts.orderId !== undefined
+          ? { orderId: opts.orderId }
+          : { clientOrderId: opts.clientOrderId! },
+      ),
+    );
   });
 
 await program.parseAsync();

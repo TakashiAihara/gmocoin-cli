@@ -66,8 +66,9 @@ export async function ensureCsv(opts: {
   return path;
 }
 
-function num(v: string): number {
-  const n = Number(v);
+// 値は文字列で届く。Number("") / Number(" ") / Number(null) は 0 になるので、文字列以外と空白だけは数値と認めない
+function num(v: unknown): number {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
   if (!Number.isFinite(n)) throw new Error(`not a number: ${JSON.stringify(v)}`);
   return n;
 }
@@ -166,21 +167,29 @@ async function* recordChannel(opts: {
       const t = Date.parse(msg.timestamp);
       if (!Number.isFinite(t)) throw new Error(`bad timestamp in ${path}: ${msg.timestamp}`);
       if (t < from || t >= to) continue;
-      if (channel === "orderbooks") {
-        const book = msg as RawBook;
-        yield { kind: "book", t, asks: levels(book.asks), bids: levels(book.bids) };
-      } else {
-        const trade = msg as RawTrade;
-        yield {
-          kind: "trade",
-          t,
-          side: sideOf(trade.side),
-          price: num(trade.price),
-          size: num(trade.size),
-        };
-      }
+      yield toMarketEvent(channel, msg, t);
     }
   }
+}
+
+// Public WebSocket の 1 メッセージを replay と同じ形にする。record と stream が使う
+export function toMarketEvent(
+  channel: "orderbooks" | "trades",
+  msg: unknown,
+  t: number,
+): MarketEvent {
+  if (channel === "orderbooks") {
+    const book = msg as RawBook;
+    return { kind: "book", t, asks: levels(book.asks), bids: levels(book.bids) };
+  }
+  const trade = msg as RawTrade;
+  return {
+    kind: "trade",
+    t,
+    side: sideOf(trade.side),
+    price: num(trade.price),
+    size: num(trade.size),
+  };
 }
 
 export async function* recordEvents(opts: {
