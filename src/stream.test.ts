@@ -417,13 +417,16 @@ test("alive lines come at each interval only while messages arrive within the wi
   const during = alives().length;
   expect(during).toBeGreaterThanOrEqual(2);
   expect(alives()[0]!.t).toBeGreaterThanOrEqual(before);
+  // 板は 1 つしか送っていないので、t が受け取った時刻なら 2 行目も同じ値になる
+  expect(alives()[1]!.t).toBeGreaterThan(alives()[0]!.t);
 
-  // 窓 (120ms) を過ぎて何も来なければ止まる
+  // 窓 (120ms) を過ぎて何も来なければ止まる。受け取りは送った後なので、どの alive も
+  // 送った時刻 + 窓 + 届くまでの遅れ (余裕 30ms) の内にある
   await Bun.sleep(150);
   const settled = alives().length;
   await Bun.sleep(150);
   expect(alives().length).toBe(settled);
-  expect(settled).toBeLessThanOrEqual(during + 2);
+  expect(alives().every((a) => a.t <= before + 120 + 30)).toBe(true);
 });
 
 test("alive lines stop as soon as the connection drops, and resume after data returns", async () => {
@@ -432,17 +435,20 @@ test("alive lines stop as soon as the connection drops, and resume after data re
   fake!.send(book);
   await waitFor(() => alives().length >= 1);
 
+  const atDrop = alives().length;
+  const eventsAtDrop = events.length;
   fake!.closeConn();
   await waitFor(() => fake!.received.length === 4);
-  const atReconnect = alives().length;
-  // 繋ぎ直したが、まだ何も受け取っていない: 窓の内でも出ない
+  // 切れてから繋ぎ直し、まだ何も受け取っていない間: 窓 (10 秒) の内でも出ない
   await Bun.sleep(150);
-  expect(alives().length).toBe(atReconnect);
+  expect(alives().length).toBe(atDrop);
 
   fake!.send(book);
-  await waitFor(() => alives().length > atReconnect);
-  const kinds = events.map((e) => e.kind);
-  expect(kinds.indexOf("gap")).toBeLessThan(kinds.lastIndexOf("alive"));
+  await waitFor(() => alives().length > atDrop);
+  // 切れた後の行は gap が先で、alive はその後
+  const after = events.slice(eventsAtDrop).map((e) => e.kind);
+  expect(after[0]).toBe("gap");
+  expect(after.slice(1).every((k) => k === "alive")).toBe(true);
 });
 
 test("stop ends the alive lines", async () => {
@@ -454,4 +460,14 @@ test("stop ends the alive lines", async () => {
   const n = alives().length;
   await Bun.sleep(120);
   expect(alives().length).toBe(n);
+});
+
+test("malformed frames do not produce alive lines", async () => {
+  const { alives } = startAlive({ aliveIntervalMs: 30, aliveWindowMs: 10_000 });
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(brokenBook);
+  fake!.send(trade("1").replace('"BTC"', '"ETH"'));
+  fake!.send("not json");
+  await Bun.sleep(150);
+  expect(alives()).toEqual([]);
 });

@@ -53,12 +53,12 @@ export function startStream(opts: StreamOptions): { stop(): void } {
 
   // 繋ぎ直しが続いても、印は最初に切れた時刻から 1 つだけ出す
   let gapSince: number | undefined;
-  // 今の接続で最後に中身の通ったメッセージを受け取った時刻。切れたら消す
+  // 今の接続で最後に中身の通ったメッセージを受け取った時刻 (単調な時計。手元の時計が戻っても
+  // 窓が延びない)。切れたら消す
   let lastReceivedAt: number | undefined;
   const aliveTimer = setInterval(() => {
-    const now = Date.now();
-    if (lastReceivedAt !== undefined && now - lastReceivedAt <= aliveWindowMs) {
-      onEvent({ kind: "alive", t: now });
+    if (lastReceivedAt !== undefined && performance.now() - lastReceivedAt <= aliveWindowMs) {
+      onEvent({ kind: "alive", t: Date.now() });
     }
   }, aliveIntervalMs);
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -150,7 +150,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     }
 
     armIdle();
-    lastReceivedAt = Date.now();
+    lastReceivedAt = performance.now();
     // 最後に送る購読の channel にデータが届いたら、それより前の購読への拒否はもう届いていない
     // (1 つの接続の中で frame は順に届く)。それまでは backoff を戻さない
     if (ch === subscriptions[subscriptions.length - 1]) backoff = backoffInitialMs;
