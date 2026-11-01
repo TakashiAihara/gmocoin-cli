@@ -409,6 +409,14 @@ function parseSpotSymbol(v: string): string {
   return v;
 }
 
+// GMO の制約: 36 文字以内の半角英数字
+function parseClientOrderId(v: string): string {
+  if (!/^[A-Za-z0-9]{1,36}$/.test(v)) {
+    throw new InvalidArgumentError("client order id must be 1 to 36 letters or digits");
+  }
+  return v;
+}
+
 function parseSide(v: string): "BUY" | "SELL" {
   if (v !== "BUY" && v !== "SELL") throw new InvalidArgumentError("side must be BUY or SELL");
   return v;
@@ -468,6 +476,11 @@ program
   .requiredOption("--size <n>", "order size", parseDecimal)
   .option("--price <n>", "limit price, limit orders only", parseDecimal)
   .option("--post-only", "cancel instead of taking (timeInForce=SOK), limit orders only")
+  .requiredOption(
+    "--client-order-id <id>",
+    "caller-chosen unique id, used to find the order when the result is unknown",
+    parseClientOrderId,
+  )
   .action(
     (opts: {
       symbol: string;
@@ -476,6 +489,7 @@ program
       size: string;
       price?: string;
       postOnly?: boolean;
+      clientOrderId: string;
     }) => {
       if (opts.type === "limit" && opts.price === undefined) {
         program.error("--price is required for limit orders");
@@ -502,7 +516,24 @@ program
 program
   .command("executions")
   .description("print the fills of one order as JSON (Private API)")
-  .requiredOption("--order-id <id>", "order whose fills to print", parseOrderId)
-  .action((opts: { orderId: string }) => runPrivate((client) => executions(client, opts.orderId)));
+  .option("--order-id <id>", "order whose fills to print", parseOrderId)
+  .option(
+    "--client-order-id <id>",
+    "the --client-order-id the order was placed with",
+    parseClientOrderId,
+  )
+  .action((opts: { orderId?: string; clientOrderId?: string }) => {
+    if ((opts.orderId === undefined) === (opts.clientOrderId === undefined)) {
+      program.error("give exactly one of --order-id and --client-order-id");
+    }
+    return runPrivate((client) =>
+      executions(
+        client,
+        opts.orderId !== undefined
+          ? { orderId: opts.orderId }
+          : { clientOrderId: opts.clientOrderId! },
+      ),
+    );
+  });
 
 await program.parseAsync();

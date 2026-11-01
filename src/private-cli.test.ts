@@ -86,7 +86,10 @@ test("balance signs the request and prints amounts as numbers", async () => {
 
 test("a market order sends the size as written and no price", async () => {
   const api = fakePrivate(() => ok("637000"));
-  const r = await run(["order", "--side", "BUY", "--type", "market", "--size", "0.0001"], api.url);
+  const r = await run(
+    ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "market", "--size", "0.0001"],
+    api.url,
+  );
   expect(r.code).toBe(0);
   expect(JSON.parse(r.stdout)).toEqual({ orderId: "637000" });
   expect(api.reqs.length).toBe(1);
@@ -97,6 +100,7 @@ test("a market order sends the size as written and no price", async () => {
     side: "BUY",
     executionType: "MARKET",
     size: "0.0001",
+    clientOrderId: "c1",
   });
 });
 
@@ -105,6 +109,8 @@ test("a post-only limit order sends the price and timeInForce SOK", async () => 
   const r = await run(
     [
       "order",
+      "--client-order-id",
+      "c1",
       "--side",
       "SELL",
       "--type",
@@ -124,6 +130,7 @@ test("a post-only limit order sends the price and timeInForce SOK", async () => 
     side: "SELL",
     executionType: "LIMIT",
     size: "0.001",
+    clientOrderId: "c1",
     price: "15000123",
     timeInForce: "SOK",
   });
@@ -131,7 +138,10 @@ test("a post-only limit order sends the price and timeInForce SOK", async () => 
 
 test("a limit order without --price is refused before anything is sent", async () => {
   const api = fakePrivate(() => ok("1"));
-  const r = await run(["order", "--side", "BUY", "--type", "limit", "--size", "0.001"], api.url);
+  const r = await run(
+    ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "limit", "--size", "0.001"],
+    api.url,
+  );
   expect(r.code).not.toBe(0);
   expect(r.stderr).toContain("--price is required for limit orders");
   expect(api.reqs.length).toBe(0);
@@ -140,7 +150,18 @@ test("a limit order without --price is refused before anything is sent", async (
 test("a market order with --post-only is refused before anything is sent", async () => {
   const api = fakePrivate(() => ok("1"));
   const r = await run(
-    ["order", "--side", "BUY", "--type", "market", "--size", "0.001", "--post-only"],
+    [
+      "order",
+      "--client-order-id",
+      "c1",
+      "--side",
+      "BUY",
+      "--type",
+      "market",
+      "--size",
+      "0.001",
+      "--post-only",
+    ],
     api.url,
   );
   expect(r.code).not.toBe(0);
@@ -188,6 +209,7 @@ test("orders reads every page and maps the fields", async () => {
   expect(out.length).toBe(101);
   expect(out[100]).toEqual({
     orderId: "777",
+    clientOrderId: null,
     side: "BUY",
     type: "limit",
     price: 14990000,
@@ -236,6 +258,7 @@ test("executions prints the fills of the order with ms timestamps", async () => 
     {
       executionId: "72123911",
       orderId: "123456789",
+      clientOrderId: null,
       side: "BUY",
       price: 15000000,
       size: 0.0007,
@@ -260,7 +283,10 @@ for (const missing of ["GMOCOIN_API_KEY", "GMOCOIN_API_SECRET"]) {
 test("an exchange rejection exits 4 with the response on stderr, sent once", async () => {
   const messages = [{ message_code: "ERR-201", message_string: "Trading margin is insufficient" }];
   const api = fakePrivate(() => ({ status: 1, messages, responsetime: "2026-11-01T00:00:00Z" }));
-  const r = await run(["order", "--side", "BUY", "--type", "market", "--size", "1"], api.url);
+  const r = await run(
+    ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "market", "--size", "1"],
+    api.url,
+  );
   expect(r.code).toBe(4);
   expect(JSON.parse(r.stderr)).toEqual({ status: 1, messages });
   expect(r.stdout).toBe("");
@@ -269,7 +295,10 @@ test("an exchange rejection exits 4 with the response on stderr, sent once", asy
 
 test("an unexpected response exits 1 and the order is not retried", async () => {
   const api = fakePrivate(() => new Response("bad gateway", { status: 502 }));
-  const r = await run(["order", "--side", "BUY", "--type", "market", "--size", "1"], api.url);
+  const r = await run(
+    ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "market", "--size", "1"],
+    api.url,
+  );
   expect(r.code).toBe(1);
   expect(r.stderr).toContain("unexpected response (HTTP 502)");
   expect(api.reqs.length).toBe(1);
@@ -315,7 +344,10 @@ test("an active order without a price prints price null", async () => {
 for (const size of ["0", "-1", "1e-4", "abc", ".5"]) {
   test(`--size ${size} is refused before anything is sent`, async () => {
     const api = fakePrivate(() => ok("1"));
-    const r = await run(["order", "--side", "BUY", "--type", "market", "--size", size], api.url);
+    const r = await run(
+      ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "market", "--size", size],
+      api.url,
+    );
     expect(r.code).not.toBe(0);
     expect(r.stderr).toContain("must be a positive decimal");
     expect(api.reqs.length).toBe(0);
@@ -325,7 +357,19 @@ for (const size of ["0", "-1", "1e-4", "abc", ".5"]) {
 test("a market order with --price is refused before anything is sent", async () => {
   const api = fakePrivate(() => ok("1"));
   const r = await run(
-    ["order", "--side", "BUY", "--type", "market", "--size", "0.001", "--price", "15000000"],
+    [
+      "order",
+      "--client-order-id",
+      "c1",
+      "--side",
+      "BUY",
+      "--type",
+      "market",
+      "--size",
+      "0.001",
+      "--price",
+      "15000000",
+    ],
     api.url,
   );
   expect(r.code).not.toBe(0);
@@ -336,7 +380,19 @@ test("a market order with --price is refused before anything is sent", async () 
 test("a leverage symbol is refused for order before anything is sent", async () => {
   const api = fakePrivate(() => ok("1"));
   const r = await run(
-    ["order", "--symbol", "BTC_JPY", "--side", "BUY", "--type", "market", "--size", "0.01"],
+    [
+      "order",
+      "--client-order-id",
+      "c1",
+      "--symbol",
+      "BTC_JPY",
+      "--side",
+      "BUY",
+      "--type",
+      "market",
+      "--size",
+      "0.01",
+    ],
     api.url,
   );
   expect(r.code).not.toBe(0);
@@ -359,4 +415,78 @@ test("a rejection without messages still exits 4 with an empty list", async () =
   const r = await run(["balance"], api.url);
   expect(r.code).toBe(4);
   expect(JSON.parse(r.stderr)).toEqual({ status: 5, messages: [] });
+});
+
+test("order without --client-order-id is refused before anything is sent", async () => {
+  const api = fakePrivate(() => ok("1"));
+  const r = await run(["order", "--side", "BUY", "--type", "market", "--size", "0.001"], api.url);
+  expect(r.code).not.toBe(0);
+  expect(r.stderr).toContain("--client-order-id");
+  expect(api.reqs.length).toBe(0);
+});
+
+for (const cid of ["has-dash", "a".repeat(37)]) {
+  test(`--client-order-id ${cid.slice(0, 10)} is refused before anything is sent`, async () => {
+    const api = fakePrivate(() => ok("1"));
+    const r = await run(
+      ["order", "--client-order-id", cid, "--side", "BUY", "--type", "market", "--size", "0.001"],
+      api.url,
+    );
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("client order id must be 1 to 36 letters or digits");
+    expect(api.reqs.length).toBe(0);
+  });
+}
+
+test("a 36-character client order id is accepted", async () => {
+  const api = fakePrivate(() => ok("2"));
+  const cid = "A1".repeat(18);
+  const r = await run(
+    ["order", "--client-order-id", cid, "--side", "BUY", "--type", "market", "--size", "0.001"],
+    api.url,
+  );
+  expect(r.code).toBe(0);
+  expect(JSON.parse(api.reqs[0]!.body).clientOrderId).toBe(cid);
+});
+
+test("executions can be looked up by client order id", async () => {
+  const api = fakePrivate(() =>
+    ok({
+      list: [
+        {
+          executionId: 1,
+          orderId: 2,
+          clientOrderId: "soba42",
+          symbol: "BTC",
+          side: "SELL",
+          size: "0.001",
+          price: "15000000",
+          fee: "7",
+          timestamp: "2026-11-01T02:15:06.081Z",
+        },
+      ],
+    }),
+  );
+  const r = await run(["executions", "--client-order-id", "soba42"], api.url);
+  expect(r.code).toBe(0);
+  expect(JSON.parse(r.stdout)[0]).toMatchObject({ orderId: "2", clientOrderId: "soba42" });
+  expect(api.reqs[0]!.query).toBe("?clientOrderId=soba42");
+  expect(api.reqs[0]!.signOk).toBe(true);
+});
+
+for (const args of [[], ["--order-id", "1", "--client-order-id", "c1"]]) {
+  test(`executions with ${args.length === 0 ? "neither" : "both"} ids is refused`, async () => {
+    const api = fakePrivate(() => ok({}));
+    const r = await run(["executions", ...args], api.url);
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("give exactly one of --order-id and --client-order-id");
+    expect(api.reqs.length).toBe(0);
+  });
+}
+
+test("orders carries the client order id when the exchange returns one", async () => {
+  const api = fakePrivate(() => ok({ list: [{ ...activeOrder(9), clientOrderId: "soba43" }] }));
+  const r = await run(["orders"], api.url);
+  expect(r.code).toBe(0);
+  expect(JSON.parse(r.stdout)[0].clientOrderId).toBe("soba43");
 });

@@ -4,11 +4,14 @@ import type { MarketEvent } from "./backtest.ts";
 import { toMarketEvent } from "./market-data.ts";
 import type { Channel } from "./record.ts";
 
+// 再接続の間に届かなかった分の印。since は切断を検知した時刻、t は繋ぎ直して最初に受け取った時刻
+export type Gap = { kind: "gap"; t: number; since: number };
+
 export type StreamOptions = {
   url: string;
   symbol: string;
   channel: Channel;
-  onEvent: (e: MarketEvent) => void;
+  onEvent: (e: MarketEvent | Gap) => void;
   subscribeIntervalMs?: number;
   backoffInitialMs?: number;
   backoffMaxMs?: number;
@@ -36,6 +39,8 @@ export function startStream(opts: StreamOptions): { stop(): void } {
   let ws: WebSocket | undefined;
   let stopped = false;
   let backoff = backoffInitialMs;
+  // 繋ぎ直しが続いても、印は最初に切れた時刻から 1 つだけ出す
+  let gapSince: number | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let subscribeTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -57,6 +62,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
   function drop(sock: WebSocket, reason: string) {
     const wait = backoff;
     log(`disconnected: ${reason}, reconnecting in ${wait}ms`);
+    gapSince ??= Date.now();
     closeSocket(sock);
     ws = undefined;
     clearTimeout(idleTimer);
@@ -95,6 +101,10 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     }
     armIdle();
     backoff = backoffInitialMs;
+    if (gapSince !== undefined) {
+      onEvent({ kind: "gap", t: Date.now(), since: gapSince });
+      gapSince = undefined;
+    }
     if (ch !== channel) return;
 
     const t = typeof msg.timestamp === "string" ? Date.parse(msg.timestamp) : NaN;

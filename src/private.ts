@@ -137,6 +137,7 @@ export type OrderRequest = {
   size: string;
   price?: string;
   postOnly?: boolean;
+  clientOrderId: string;
 };
 
 export async function order(client: Client, req: OrderRequest) {
@@ -145,6 +146,7 @@ export async function order(client: Client, req: OrderRequest) {
     side: req.side,
     executionType: req.type === "market" ? "MARKET" : "LIMIT",
     size: req.size,
+    clientOrderId: req.clientOrderId,
   };
   if (req.type === "limit") body.price = req.price;
   if (req.postOnly) body.timeInForce = "SOK";
@@ -173,6 +175,7 @@ export async function activeOrders(client: Client, symbol: string) {
   }
   return all.map((o) => ({
     orderId: id(o.orderId, "orderId"),
+    clientOrderId: clientOrderIdOf(o.clientOrderId),
     side: id(o.side, "side"),
     type: id(o.executionType, "executionType").toLowerCase(),
     // 成行の注文は price を持たない
@@ -184,10 +187,19 @@ export async function activeOrders(client: Client, symbol: string) {
   }));
 }
 
-export async function executions(client: Client, orderId: string) {
-  return list(await client.get("/v1/executions", { orderId })).map((e) => ({
+// 呼ぶ側が採番した ID。注文を送ったか分からないとき (exit 1) に、これで約定と未約定を引く
+function clientOrderIdOf(v: unknown): string | null {
+  return v === undefined ? null : id(v, "clientOrderId");
+}
+
+export async function executions(
+  client: Client,
+  by: { orderId: string } | { clientOrderId: string },
+) {
+  return list(await client.get("/v1/executions", by)).map((e) => ({
     executionId: id(e.executionId, "executionId"),
     orderId: id(e.orderId, "orderId"),
+    clientOrderId: clientOrderIdOf(e.clientOrderId),
     side: id(e.side, "side"),
     price: num(e.price, "price"),
     size: num(e.size, "size"),

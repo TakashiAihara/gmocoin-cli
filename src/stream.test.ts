@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { MarketEvent } from "./backtest.ts";
+import type { Gap } from "./stream.ts";
 import { startStream } from "./stream.ts";
 import { startFakeServer, waitFor, type FakeServer } from "./test-helpers.ts";
 
@@ -33,7 +34,7 @@ const book = JSON.stringify({
 
 function start(opts: { idleTimeoutMs?: number } = {}) {
   fake = startFakeServer();
-  const events: MarketEvent[] = [];
+  const events: (MarketEvent | Gap)[] = [];
   const logs: string[] = [];
   stream = startStream({
     url: fake.url,
@@ -80,7 +81,8 @@ test("a dropped connection is logged on one line, reconnected and subscribed aga
     "disconnected: closed, reconnecting in 20ms",
   ]);
   fake!.send(trade("15000060"));
-  await waitFor(() => events.length === 1);
+  await waitFor(() => events.length === 2);
+  expect(events.map((e) => e.kind)).toEqual(["gap", "trade"]);
 });
 
 test("books keep a quiet trades stream connected", async () => {
@@ -147,5 +149,34 @@ test("a rejected subscribe drops the connection and subscribes again", async () 
     "disconnected: rejected: ERR-5003 Request too many., reconnecting in 20ms",
   );
   fake!.send(trade("15000090"));
+  await waitFor(() => events.length === 2);
+  expect(events.map((e) => e.kind)).toEqual(["gap", "trade"]);
+});
+
+test("one gap line spans repeated drops, from the first drop to the first message after", async () => {
+  const { events } = start();
+  await waitFor(() => fake!.received.length === 2);
+  fake!.send(trade("15000000"));
   await waitFor(() => events.length === 1);
+  const beforeDrop = Date.now();
+  fake!.closeConn();
+  await waitFor(() => fake!.opened === 2);
+  await Bun.sleep(30);
+  const beforeSecondDrop = Date.now();
+  fake!.closeConn();
+  await waitFor(() => fake!.received.length === 6);
+  await Bun.sleep(50);
+  const beforeMessage = Date.now();
+  fake!.send(book);
+  await waitFor(() => events.length === 2);
+  fake!.send(book);
+  await Bun.sleep(50);
+
+  expect(events.length).toBe(2);
+  const gap = events[1] as Gap;
+  expect(gap.kind).toBe("gap");
+  // since は 1 回目の切断の時刻で、2 回目の切断ではない
+  expect(gap.since).toBeGreaterThanOrEqual(beforeDrop);
+  expect(gap.since).toBeLessThan(beforeSecondDrop);
+  expect(gap.t).toBeGreaterThanOrEqual(beforeMessage);
 });
