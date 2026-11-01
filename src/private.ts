@@ -74,7 +74,7 @@ export function createClient(opts: {
     } catch {
       throw new Error(`unexpected response (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
-    if (typeof json !== "object" || json === null || typeof json.status !== "number") {
+    if (json === null || typeof json.status !== "number") {
       throw new Error(`unexpected response (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     if (json.status !== 0) {
@@ -163,7 +163,7 @@ export async function cancel(client: Client, orderId: string) {
 }
 
 const PAGE_SIZE = 100;
-// 1 万円の資金で 1 万件の未約定は無い。超えたら取引所の応答の誤り (同じページを返し続ける等) とみなす
+// 1 万件を超える未約定は想定しない。超えたら取引所の応答の誤り (同じページを返し続ける等) とみなす
 const MAX_PAGES = 100;
 
 export async function activeOrders(client: Client, symbol: string) {

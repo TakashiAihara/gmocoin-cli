@@ -133,7 +133,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     }
 
     armIdle();
-    // 最後に送る購読の channel にデータが届いたら、この接続の購読は全部受け付けられている
+    // 最後に送る購読の channel にデータが届いたら、それより前の購読への拒否はもう届いていない
     // (1 つの接続の中で frame は順に届く)。それまでは backoff を戻さない
     if (ch === subscriptions[subscriptions.length - 1]) backoff = backoffInitialMs;
     if (gapSince !== undefined) {

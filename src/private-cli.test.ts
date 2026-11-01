@@ -588,3 +588,10 @@ test("orders stops after 100 full pages instead of reading forever", async () =>
   expect(r.stderr).toContain("more than 100 pages of active orders");
   expect(api.reqs.length).toBe(100);
 });
+
+test("a blank amount from the exchange exits 1 instead of reading as 0", async () => {
+  const api = fakePrivate(() => ok([{ amount: " ", available: "0", symbol: "JPY" }]));
+  const r = await run(["balance"], api.url);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain('unexpected amount: " "');
+});

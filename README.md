@@ -106,7 +106,7 @@ gmocoin executions --client-order-id a1             # the same, by the id the ca
 
 - `--symbol` defaults to `BTC`. `order` takes spot symbols only (no `_`, so not leverage symbols such as `BTC_JPY`). Sizes and prices are sent as written. `--post-only` sends `timeInForce=SOK`.
 - stdout is one JSON value. Prices, sizes and fees are numbers; ids are strings. An active market order has `price: null`.
-- `order` requires `--client-order-id` (1 to 36 letters or digits, unique in the account). A reused id is refused with `ERR-915` (exit 4), which means an order with that id already exists. `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; look it up with `executions --client-order-id` and `orders` (which carries `clientOrderId`).
+- `order` requires `--client-order-id` (1 to 36 letters or digits, unique in the account). A reused id is refused with `ERR-915` (exit 4), which means an order with that id already exists; an id whose order was rejected may be reused (GMO API docs, `/v1/order`). `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; look it up with `executions --client-order-id` and `orders` (which carries `clientOrderId`).
 - Exit codes: 2 when the key or secret is missing (nothing is sent), 4 when the exchange rejects the request (stderr has `{"status":<n>,"messages":[{"message_code":"ERR-...","message_string":"..."}]}`), 1 for a network failure or an unexpected response.
 
 ## Develop

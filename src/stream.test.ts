@@ -360,3 +360,29 @@ test("a broken first message after a reconnect does not close the gap", async ()
   await waitFor(() => events.length === 2);
   expect(events.map((e) => e.kind)).toEqual(["gap", "trade"]);
 });
+
+const brokenBook = book.replace('"timestamp":"2026-11-01T00:00:00.100Z"', '"timestamp":"x"');
+
+test("broken books do not count as liveness", async () => {
+  start({ idleTimeoutMs: 150 });
+  await waitFor(() => fake!.opened === 1);
+  for (let i = 0; i < 8; i++) {
+    fake!.send(brokenBook);
+    await Bun.sleep(50);
+  }
+  expect(fake!.opened).toBeGreaterThan(1);
+});
+
+test("a broken book on the last channel does not reset the backoff", async () => {
+  const { logs } = start();
+  const reconnects = () => logs.filter((l) => l.includes("reconnecting"));
+  const reject = () => fake!.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+  await waitFor(() => fake!.received.length === 2);
+  reject();
+  await waitFor(() => fake!.received.length === 4);
+  fake!.send(brokenBook);
+  await Bun.sleep(20);
+  reject();
+  await waitFor(() => reconnects().length === 2);
+  expect(reconnects()[1]).toContain("reconnecting in 40ms");
+});
