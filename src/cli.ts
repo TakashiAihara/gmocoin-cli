@@ -16,7 +16,21 @@ import {
   ensureCsv,
   recordEvents,
 } from "./market-data.ts";
+import {
+  activeOrders,
+  balance,
+  cancel,
+  type Client,
+  createClient,
+  credentialsFromEnv,
+  CredentialsError,
+  DEFAULT_PRIVATE_API_URL,
+  ExchangeError,
+  executions,
+  order,
+} from "./private.ts";
 import { CHANNELS, DEFAULT_PUBLIC_WS_URL, startRecorder, type Channel } from "./record.ts";
+import { startStream } from "./stream.ts";
 
 function collect<T>(parse: (v: string) => T) {
   return (value: string, prev: T[] = []) => [...prev, parse(value)];
@@ -352,5 +366,134 @@ program
       process.exit(1);
     }
   });
+
+// exit code は soba の docs/design/live.md の契約。2 = キーが無い (何も送っていない)、
+// 4 = 取引所の拒否 (stderr に応答そのもの)、1 = 通信の失敗・想定外の応答 (送ったかは分からない)
+const EXIT_NO_CREDENTIALS = 2;
+const EXIT_EXCHANGE_ERROR = 4;
+
+async function runPrivate(call: (client: Client) => Promise<unknown>) {
+  let client: Client;
+  try {
+    client = createClient({
+      baseUrl: process.env.GMOCOIN_PRIVATE_API_URL || DEFAULT_PRIVATE_API_URL,
+      credentials: credentialsFromEnv(process.env),
+    });
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exit(err instanceof CredentialsError ? EXIT_NO_CREDENTIALS : 1);
+  }
+  try {
+    console.log(JSON.stringify(await call(client)));
+  } catch (err) {
+    if (err instanceof ExchangeError) {
+      console.error(JSON.stringify({ status: err.status, messages: err.messages }));
+      process.exit(EXIT_EXCHANGE_ERROR);
+    }
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+}
+
+// 数量・値段は書かれた文字列のまま送る (数値に直すと 0.0001 が 1e-4 になりうる)
+function parseDecimal(v: string): string {
+  if (!/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0) {
+    throw new InvalidArgumentError(`must be a positive decimal: ${v}`);
+  }
+  return v;
+}
+
+function parseSide(v: string): "BUY" | "SELL" {
+  if (v !== "BUY" && v !== "SELL") throw new InvalidArgumentError("side must be BUY or SELL");
+  return v;
+}
+
+function parseOrderType(v: string): "market" | "limit" {
+  if (v !== "market" && v !== "limit")
+    throw new InvalidArgumentError("type must be market or limit");
+  return v;
+}
+
+function parseOrderId(v: string): string {
+  if (!/^\d+$/.test(v)) throw new InvalidArgumentError(`not an order id: ${v}`);
+  return v;
+}
+
+program
+  .command("stream")
+  .description("print live Public WebSocket trades (or books) as JSONL in the replay format")
+  .option("--symbol <symbol>", "symbol to stream", parseSymbol, "BTC")
+  .option("--channel <channel>", "trades or orderbooks", parseChannel, "trades")
+  .action((opts: { symbol: string; channel: Channel }) => {
+    // 読む側が閉じた (EPIPE) のは読む側が止めると決めたこと。失敗にしない
+    process.stdout.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") process.exit(0);
+      console.error(err.message);
+      process.exit(1);
+    });
+    const stream = startStream({
+      url: process.env.GMOCOIN_PUBLIC_WS_URL || DEFAULT_PUBLIC_WS_URL,
+      symbol: opts.symbol,
+      channel: opts.channel,
+      onEvent: (e) => process.stdout.write(JSON.stringify(e) + "\n"),
+    });
+    const exit = () => {
+      stream.stop();
+      process.exit(0);
+    };
+    process.on("SIGINT", exit);
+    process.on("SIGTERM", exit);
+  });
+
+program
+  .command("balance")
+  .description("print the account's assets as JSON (Private API)")
+  .action(() => runPrivate(balance));
+
+program
+  .command("order")
+  .description("place one order and print its orderId (Private API, never retried)")
+  .option("--symbol <symbol>", "symbol to trade", parseSymbol, "BTC")
+  .requiredOption("--side <side>", "BUY or SELL", parseSide)
+  .requiredOption("--type <type>", "market or limit", parseOrderType)
+  .requiredOption("--size <n>", "order size", parseDecimal)
+  .option("--price <n>", "limit price, limit orders only", parseDecimal)
+  .option("--post-only", "cancel instead of taking (timeInForce=SOK), limit orders only")
+  .action(
+    (opts: {
+      symbol: string;
+      side: "BUY" | "SELL";
+      type: "market" | "limit";
+      size: string;
+      price?: string;
+      postOnly?: boolean;
+    }) => {
+      if (opts.type === "limit" && opts.price === undefined) {
+        program.error("--price is required for limit orders");
+      }
+      if (opts.type === "market" && (opts.price !== undefined || opts.postOnly)) {
+        program.error("--price and --post-only are for limit orders only");
+      }
+      return runPrivate((client) => order(client, opts));
+    },
+  );
+
+program
+  .command("cancel")
+  .description("cancel one order and print its orderId (Private API, never retried)")
+  .argument("<orderId>", "order to cancel", parseOrderId)
+  .action((orderId: string) => runPrivate((client) => cancel(client, orderId)));
+
+program
+  .command("orders")
+  .description("print the active (unfilled) orders as JSON (Private API)")
+  .option("--symbol <symbol>", "symbol", parseSymbol, "BTC")
+  .action((opts: { symbol: string }) => runPrivate((client) => activeOrders(client, opts.symbol)));
+
+program
+  .command("executions")
+  .description("print the fills of one order as JSON (Private API)")
+  .requiredOption("--order-id <id>", "order whose fills to print", parseOrderId)
+  .action((opts: { orderId: string }) => runPrivate((client) => executions(client, opts.orderId)));
 
 await program.parseAsync();
