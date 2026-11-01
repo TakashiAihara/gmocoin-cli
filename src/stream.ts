@@ -7,15 +7,21 @@ import type { Channel } from "./record.ts";
 // 再接続の間に届かなかった分の印。since は切断を検知した時刻、t は繋ぎ直して最初に受け取った時刻
 export type Gap = { kind: "gap"; t: number; since: number };
 
+// 受信できている間だけ出す生存の印。t は手元の時計。約定が来ない閑散と、繋がっていない状態を
+// 呼ぶ側が分けられるように、繋がっていない・無通信の間は出さない
+export type Alive = { kind: "alive"; t: number };
+
 export type StreamOptions = {
   url: string;
   symbol: string;
   channel: Channel;
-  onEvent: (e: MarketEvent | Gap) => void;
+  onEvent: (e: MarketEvent | Gap | Alive) => void;
   subscribeIntervalMs?: number;
   backoffInitialMs?: number;
   backoffMaxMs?: number;
   idleTimeoutMs?: number;
+  aliveIntervalMs?: number;
+  aliveWindowMs?: number;
   log?: (line: string) => void;
   // 繋ぎ直しても直らない拒否 (存在しない銘柄など)。呼ぶ側が止まる
   onFatal?: (err: Error) => void;
@@ -31,6 +37,8 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     backoffInitialMs = 1000,
     backoffMaxMs = 60_000,
     idleTimeoutMs = 60_000,
+    aliveIntervalMs = 30_000,
+    aliveWindowMs = 60_000,
     log = (line: string) => console.error(line),
   } = opts;
   const onFatal = opts.onFatal ?? ((err: Error) => log(`fatal: ${err.message}`));
@@ -45,6 +53,14 @@ export function startStream(opts: StreamOptions): { stop(): void } {
 
   // 繋ぎ直しが続いても、印は最初に切れた時刻から 1 つだけ出す
   let gapSince: number | undefined;
+  // 今の接続で最後に中身の通ったメッセージを受け取った時刻。切れたら消す
+  let lastReceivedAt: number | undefined;
+  const aliveTimer = setInterval(() => {
+    const now = Date.now();
+    if (lastReceivedAt !== undefined && now - lastReceivedAt <= aliveWindowMs) {
+      onEvent({ kind: "alive", t: now });
+    }
+  }, aliveIntervalMs);
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let subscribeTimer: ReturnType<typeof setTimeout> | undefined;
   let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -67,6 +83,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     const wait = backoff;
     log(`disconnected: ${reason}, reconnecting in ${wait}ms`);
     gapSince ??= Date.now();
+    lastReceivedAt = undefined;
     closeSocket(sock);
     ws = undefined;
     clearTimeout(idleTimer);
@@ -133,6 +150,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
     }
 
     armIdle();
+    lastReceivedAt = Date.now();
     // 最後に送る購読の channel にデータが届いたら、それより前の購読への拒否はもう届いていない
     // (1 つの接続の中で frame は順に届く)。それまでは backoff を戻さない
     if (ch === subscriptions[subscriptions.length - 1]) backoff = backoffInitialMs;
@@ -159,6 +177,7 @@ export function startStream(opts: StreamOptions): { stop(): void } {
 
   function stop() {
     stopped = true;
+    clearInterval(aliveTimer);
     clearTimeout(idleTimer);
     clearTimeout(subscribeTimer);
     clearTimeout(reconnectTimer);
