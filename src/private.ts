@@ -68,13 +68,13 @@ export function createClient(opts: {
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
-    let json: { status?: unknown; data?: unknown; messages?: unknown };
+    let json: { status?: unknown; data?: unknown; messages?: unknown } | null;
     try {
       json = JSON.parse(text);
     } catch {
       throw new Error(`unexpected response (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
-    if (typeof json.status !== "number") {
+    if (typeof json !== "object" || json === null || typeof json.status !== "number") {
       throw new Error(`unexpected response (HTTP ${res.status}): ${text.slice(0, 200)}`);
     }
     if (json.status !== 0) {
@@ -94,7 +94,7 @@ export function createClient(opts: {
 }
 
 function num(v: unknown, field: string): number {
-  const n = typeof v === "number" ? v : typeof v === "string" && v !== "" ? Number(v) : NaN;
+  const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
   if (!Number.isFinite(n)) throw new Error(`unexpected ${field}: ${JSON.stringify(v)}`);
   return n;
 }
@@ -163,6 +163,8 @@ export async function cancel(client: Client, orderId: string) {
 }
 
 const PAGE_SIZE = 100;
+// 1 万円の資金で 1 万件の未約定は無い。超えたら取引所の応答の誤り (同じページを返し続ける等) とみなす
+const MAX_PAGES = 100;
 
 export async function activeOrders(client: Client, symbol: string) {
   const all: Record<string, unknown>[] = [];
@@ -176,6 +178,7 @@ export async function activeOrders(client: Client, symbol: string) {
     );
     all.push(...l);
     if (l.length < PAGE_SIZE) break;
+    if (page >= MAX_PAGES) throw new Error(`more than ${MAX_PAGES} pages of active orders`);
   }
   return all.map((o) => ({
     orderId: id(o.orderId, "orderId"),
@@ -193,7 +196,8 @@ export async function activeOrders(client: Client, symbol: string) {
 
 // 呼ぶ側が採番した ID。注文を送ったか分からないとき (exit 1) に、これで約定と未約定を引く
 function clientOrderIdOf(v: unknown): string | null {
-  return v === undefined ? null : id(v, "clientOrderId");
+  // 付けずに出した注文 (Web の画面から等) は、欠ける・null・空文字のどれで来ても null にする
+  return v === undefined || v === null || v === "" ? null : id(v, "clientOrderId");
 }
 
 export async function executions(

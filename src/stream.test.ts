@@ -245,7 +245,7 @@ test("a trade before the last subscribe is sent does not reset the backoff", asy
   expect(logs.filter((l) => l.includes("reconnecting"))[1]).toContain("reconnecting in 40ms");
 });
 
-test("a rejection other than rate limiting stops the stream as fatal", async () => {
+test("an ERR-5106 rejection stops the stream as fatal", async () => {
   fake = startFakeServer();
   const fatal: string[] = [];
   stream = startStream({
@@ -273,11 +273,13 @@ test("frames that are not JSON objects, or trades with empty numbers, are skippe
   fake!.send("null");
   fake!.send("[1]");
   fake!.send(trade("").replace('"size":"0.001"', '"size":""'));
+  fake!.send(trade(" "));
+  fake!.send(trade("1").replace('"size":"0.001"', '"size":null'));
   fake!.send(trade("15000010"));
   await waitFor(() => events.length >= 1);
   await Bun.sleep(50);
   expect(events.map((e) => (e.kind === "trade" ? e.price : 0))).toEqual([15000010]);
-  expect(logs.filter((l) => l.startsWith("skipped message")).length).toBe(3);
+  expect(logs.filter((l) => l.startsWith("skipped message")).length).toBe(5);
 });
 
 test("gmocoin stream exits 1 on a rejection that reconnecting cannot fix", async () => {
@@ -300,4 +302,61 @@ test("gmocoin stream exits 1 on a rejection that reconnecting cannot fix", async
     p.kill();
     await p.exited;
   }
+});
+
+test("trades alone do not reset the backoff, a book on the last channel does", async () => {
+  const { logs } = start();
+  const reconnects = () => logs.filter((l) => l.includes("reconnecting"));
+  const reject = () => fake!.send(JSON.stringify({ error: "ERR-5003 Request too many." }));
+
+  await waitFor(() => fake!.received.length === 2);
+  reject();
+  // 2 つとも送り直した後に約定だけ届き、続いて拒否: 戻っていないので 40ms
+  await waitFor(() => fake!.received.length === 4);
+  fake!.send(trade("15000000"));
+  await Bun.sleep(20);
+  reject();
+  // 送り直した後に板が届けば、購読は全部受け付けられている: 次の拒否は 20ms に戻る
+  await waitFor(() => fake!.received.length === 6);
+  fake!.send(book);
+  await Bun.sleep(20);
+  reject();
+  await waitFor(() => reconnects().length === 3);
+  expect(reconnects().map((l) => l.replace(/.*reconnecting in /, ""))).toEqual([
+    "20ms",
+    "40ms",
+    "20ms",
+  ]);
+});
+
+test("a rejection with an unknown code reconnects instead of stopping", async () => {
+  fake = startFakeServer();
+  const fatal: string[] = [];
+  stream = startStream({
+    url: fake.url,
+    symbol: "BTC",
+    channel: "trades",
+    onEvent: () => {},
+    subscribeIntervalMs: 20,
+    backoffInitialMs: 20,
+    log: () => {},
+    onFatal: (e) => fatal.push(e.message),
+  });
+  await waitFor(() => fake!.received.length === 2);
+  fake.send(JSON.stringify({ error: "ERR-5201 MAINTENANCE." }));
+  await waitFor(() => fake!.opened === 2);
+  expect(fatal).toEqual([]);
+});
+
+test("a broken first message after a reconnect does not close the gap", async () => {
+  const { events } = start();
+  await waitFor(() => fake!.received.length === 2);
+  fake!.closeConn();
+  await waitFor(() => fake!.received.length === 4);
+  fake!.send(trade("15000020").replace("2026-11-01T00:00:00.123Z", "not a time"));
+  await Bun.sleep(30);
+  expect(events).toEqual([]);
+  fake!.send(trade("15000030"));
+  await waitFor(() => events.length === 2);
+  expect(events.map((e) => e.kind)).toEqual(["gap", "trade"]);
 });

@@ -39,6 +39,7 @@ function fakePrivate(respond: (r: Req) => Response | object) {
           req.headers.get("API-KEY") === KEY &&
           req.headers.get("API-SIGN") === expected &&
           /^\d{13}$/.test(ts) &&
+          url.pathname.startsWith("/private/v1/") &&
           (req.method !== "POST" || req.headers.get("Content-Type") === "application/json"),
       };
       reqs.push(r);
@@ -551,3 +552,39 @@ for (const price of ["0", null]) {
     expect(JSON.parse(r.stdout)[0]).toMatchObject({ orderId: "6", type: "market", price: null });
   });
 }
+
+for (const cid of [null, ""]) {
+  test(`an active order with clientOrderId ${JSON.stringify(cid)} prints null`, async () => {
+    const api = fakePrivate(() => ok({ list: [{ ...activeOrder(8), clientOrderId: cid }] }));
+    const r = await run(["orders"], api.url);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.stdout)[0].clientOrderId).toBeNull();
+  });
+}
+
+test("a JSON null response exits 1 as unexpected", async () => {
+  const api = fakePrivate(() => new Response("null", { status: 200 }));
+  const r = await run(["balance"], api.url);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain("unexpected response (HTTP 200): null");
+});
+
+test("--size with a leading zero is refused before anything is sent", async () => {
+  const api = fakePrivate(() => ok("1"));
+  const r = await run(
+    ["order", "--client-order-id", "c1", "--side", "BUY", "--type", "market", "--size", "007"],
+    api.url,
+  );
+  expect(r.code).not.toBe(0);
+  expect(r.stderr).toContain("must be a positive decimal");
+  expect(api.reqs.length).toBe(0);
+});
+
+test("orders stops after 100 full pages instead of reading forever", async () => {
+  const page = Array.from({ length: 100 }, (_, i) => activeOrder(i + 1));
+  const api = fakePrivate(() => ok({ list: page }));
+  const r = await run(["orders"], api.url);
+  expect(r.code).toBe(1);
+  expect(r.stderr).toContain("more than 100 pages of active orders");
+  expect(api.reqs.length).toBe(100);
+});

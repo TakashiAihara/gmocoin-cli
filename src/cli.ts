@@ -397,7 +397,7 @@ async function runPrivate(call: (client: Client) => Promise<unknown>) {
 
 // 数量・値段は書かれた文字列のまま送る (数値に直すと 1e-6 未満が指数表記になり、大きな値は桁が丸まる)
 function parseDecimal(v: string): string {
-  if (!/^\d+(\.\d+)?$/.test(v) || Number(v) <= 0) {
+  if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(v) || Number(v) <= 0) {
     throw new InvalidArgumentError(`must be a positive decimal: ${v}`);
   }
   return v;

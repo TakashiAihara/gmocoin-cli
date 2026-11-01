@@ -88,7 +88,7 @@ gmocoin stream                         # BTC trades
 gmocoin stream --channel orderbooks    # BTC order books
 ```
 
-Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A subscribe rejected for rate limiting (`ERR-5003 Request too many.`) is treated as a drop, so every channel is subscribed again; any other rejection (such as `ERR-5106` for an unknown symbol) exits 1, since reconnecting cannot fix it. Trades that arrive while reconnecting are lost; the first message after a reconnect is preceded by one line `{"kind":"gap","t":<ms>,"since":<ms>}`, where `since` is when the drop was noticed and `t` is when data came back.
+Trades are subscribed with `TAKER_ONLY`, as in `record`. With `--channel trades` (the default), order books are subscribed too and used only to tell a quiet market from a dead connection: trades alone can be silent for more than a minute. A dropped connection is reconnected with a backoff, and each drop is logged on stderr as one line. A rejected subscribe is treated as a drop, so every channel is subscribed again, except `ERR-5106` (invalid symbol or channel), which exits 1 because reconnecting cannot fix it. Trades that arrive while reconnecting are lost; the first message after a reconnect is preceded by one line `{"kind":"gap","t":<ms>,"since":<ms>}`, where `since` is when the drop was noticed and `t` is when data came back.
 
 ## Private API
 
@@ -106,7 +106,7 @@ gmocoin executions --client-order-id a1             # the same, by the id the ca
 
 - `--symbol` defaults to `BTC`. `order` takes spot symbols only (no `_`, so not leverage symbols such as `BTC_JPY`). Sizes and prices are sent as written. `--post-only` sends `timeInForce=SOK`.
 - stdout is one JSON value. Prices, sizes and fees are numbers; ids are strings. An active market order has `price: null`.
-- `order` requires `--client-order-id` (1 to 36 letters or digits, unique in the account; GMO refuses a reused one). `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; look it up with `executions --client-order-id` and `orders` (which carries `clientOrderId`).
+- `order` requires `--client-order-id` (1 to 36 letters or digits, unique in the account). A reused id is refused with `ERR-915` (exit 4), which means an order with that id already exists. `order` and `cancel` send exactly one request and never retry. A failure after sending may or may not have placed the order; look it up with `executions --client-order-id` and `orders` (which carries `clientOrderId`).
 - Exit codes: 2 when the key or secret is missing (nothing is sent), 4 when the exchange rejects the request (stderr has `{"status":<n>,"messages":[{"message_code":"ERR-...","message_string":"..."}]}`), 1 for a network failure or an unexpected response.
 
 ## Develop
